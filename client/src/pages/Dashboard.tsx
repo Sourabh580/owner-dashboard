@@ -1,70 +1,80 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import OrderCard from "@/components/OrderCard";
 import RevenueCard from "@/components/RevenueCard";
 import EmptyState from "@/components/EmptyState";
 import { useSound } from "@/hooks/use-sound";
-
-interface Order {
-  id: string;
-  orderNumber: number;
-  customerName: string;
-  items: string[];
-  totalPrice: string;
-  status: "pending" | "completed";
-  createdAt: Date;
-}
+import { useWebSocket } from "@/hooks/use-websocket";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import type { Order } from "@shared/schema";
 
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
+  const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
-  const [orders, setOrders] = useState<Order[]>([
-    {
-      id: "1",
-      orderNumber: 1234,
-      customerName: "Sarah Johnson",
-      items: ["2x Margherita Pizza", "1x Caesar Salad", "2x Coca Cola"],
-      totalPrice: "45.50",
-      status: "pending",
-      createdAt: new Date(Date.now() - 5 * 60 * 1000),
+  const { data: orders = [], isLoading } = useQuery<Order[]>({
+    queryKey: ['/api/orders'],
+  });
+
+  const completeOrderMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const res = await apiRequest('PATCH', `/api/orders/${orderId}/status`, { status: 'completed' });
+      return res.json();
     },
-    {
-      id: "2",
-      orderNumber: 1233,
-      customerName: "Michael Chen",
-      items: ["1x Beef Burger", "1x French Fries", "1x Milkshake"],
-      totalPrice: "28.75",
-      status: "completed",
-      createdAt: new Date(Date.now() - 15 * 60 * 1000),
+    onSuccess: (updatedOrder: Order) => {
+      queryClient.setQueryData<Order[]>(['/api/orders'], (oldOrders = []) => {
+        return oldOrders.map(o => o.id === updatedOrder.id ? updatedOrder : o);
+      });
+      toast({
+        title: "Order completed",
+        description: "The order has been marked as completed.",
+      });
     },
-    {
-      id: "3",
-      orderNumber: 1232,
-      customerName: "Emma Williams",
-      items: ["3x Chicken Wings", "1x Onion Rings", "2x Sprite"],
-      totalPrice: "32.00",
-      status: "pending",
-      createdAt: new Date(Date.now() - 8 * 60 * 1000),
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to complete order. Please try again.",
+        variant: "destructive",
+      });
     },
-    {
-      id: "4",
-      orderNumber: 1231,
-      customerName: "David Martinez",
-      items: ["1x Pasta Carbonara", "1x Garlic Bread", "1x Water"],
-      totalPrice: "24.50",
-      status: "completed",
-      createdAt: new Date(Date.now() - 25 * 60 * 1000),
-    },
-    {
-      id: "5",
-      orderNumber: 1230,
-      customerName: "Lisa Anderson",
-      items: ["2x Chocolate Cake", "2x Cappuccino"],
-      totalPrice: "18.00",
-      status: "completed",
-      createdAt: new Date(Date.now() - 35 * 60 * 1000),
-    },
-  ]);
+  });
+
+  const handleNewOrder = useCallback((order: Order) => {
+    queryClient.setQueryData<Order[]>(['/api/orders'], (oldOrders = []) => {
+      const exists = oldOrders.find(o => o.id === order.id);
+      if (exists) return oldOrders;
+      return [order, ...oldOrders];
+    });
+    
+    setNewOrderIds(prev => new Set(prev).add(order.id));
+    playNotificationSound();
+
+    toast({
+      title: "New Order Received!",
+      description: `Order #${order.orderNumber} from ${order.customerName}`,
+    });
+
+    setTimeout(() => {
+      setNewOrderIds(prev => {
+        const next = new Set(prev);
+        next.delete(order.id);
+        return next;
+      });
+    }, 3000);
+  }, [playNotificationSound, toast]);
+
+  const handleOrderUpdated = useCallback((order: Order) => {
+    queryClient.setQueryData<Order[]>(['/api/orders'], (oldOrders = []) => {
+      return oldOrders.map(o => o.id === order.id ? order : o);
+    });
+  }, []);
+
+  useWebSocket({
+    onNewOrder: handleNewOrder,
+    onOrderUpdated: handleOrderUpdated,
+  });
 
   const pendingOrders = orders.filter(order => order.status === "pending");
   const completedOrders = orders.filter(order => order.status === "completed");
@@ -79,40 +89,19 @@ export default function Dashboard() {
     : "0.00";
 
   const handleCompleteOrder = (orderId: string) => {
-    setOrders(prevOrders =>
-      prevOrders.map(order =>
-        order.id === orderId ? { ...order, status: "completed" as const } : order
-      )
-    );
+    completeOrderMutation.mutate(orderId);
   };
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const newOrder: Order = {
-        id: String(Date.now()),
-        orderNumber: 1235,
-        customerName: "James Wilson",
-        items: ["1x Supreme Pizza", "1x Garden Salad", "1x Lemonade"],
-        totalPrice: "38.25",
-        status: "pending",
-        createdAt: new Date(),
-      };
-      
-      setOrders(prev => [newOrder, ...prev]);
-      setNewOrderIds(prev => new Set(prev).add(newOrder.id));
-      playNotificationSound();
-
-      setTimeout(() => {
-        setNewOrderIds(prev => {
-          const next = new Set(prev);
-          next.delete(newOrder.id);
-          return next;
-        });
-      }, 3000);
-    }, 5000);
-
-    return () => clearTimeout(timer);
-  }, [playNotificationSound]);
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -141,8 +130,8 @@ export default function Dashboard() {
                     customerName={order.customerName}
                     items={order.items}
                     totalPrice={order.totalPrice}
-                    status={order.status}
-                    createdAt={order.createdAt}
+                    status={order.status as "pending" | "completed"}
+                    createdAt={new Date(order.createdAt)}
                     onComplete={() => handleCompleteOrder(order.id)}
                     isNew={newOrderIds.has(order.id)}
                   />
@@ -166,8 +155,8 @@ export default function Dashboard() {
                     customerName={order.customerName}
                     items={order.items}
                     totalPrice={order.totalPrice}
-                    status={order.status}
-                    createdAt={order.createdAt}
+                    status={order.status as "pending" | "completed"}
+                    createdAt={new Date(order.createdAt)}
                   />
                 ))}
               </div>
