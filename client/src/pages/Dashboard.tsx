@@ -125,64 +125,62 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-8">
-            <section>
-              <h2 className="text-xl font-semibold mb-4" data-testid="text-pending-header">
-                Pending Orders
-              </h2>
-              {pendingOrders.length === 0 ? (
-                <EmptyState type="pending" />
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {pendingOrders.map(order => (
-                    <OrderCard
-                      key={order.id}
-                      orderNumber={order.orderNumber}
-                      customerName={order.customerName}
-                      items={order.items}
-                      totalPrice={order.totalPrice}
-                      status={order.status}
-                      createdAt={order.createdAt}
-                      onComplete={() => handleCompleteOrder(order.id)}
-                      isNew={newOrderIds.has(order.id)}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <section className="lg:col-span-1">
+            <h2 className="text-xl font-semibold mb-4" data-testid="text-pending-header">
+              Pending Orders
+            </h2>
+            {pendingOrders.length === 0 ? (
+              <EmptyState type="pending" />
+            ) : (
+              <div className="space-y-4">
+                {pendingOrders.map(order => (
+                  <OrderCard
+                    key={order.id}
+                    orderNumber={order.orderNumber}
+                    customerName={order.customerName}
+                    items={order.items}
+                    totalPrice={order.totalPrice}
+                    status={order.status}
+                    createdAt={order.createdAt}
+                    onComplete={() => handleCompleteOrder(order.id)}
+                    isNew={newOrderIds.has(order.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
 
-            <section>
-              <h2 className="text-xl font-semibold mb-4" data-testid="text-completed-header">
-                Completed Orders
-              </h2>
-              {completedOrders.length === 0 ? (
-                <EmptyState type="completed" />
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {completedOrders.map(order => (
-                    <OrderCard
-                      key={order.id}
-                      orderNumber={order.orderNumber}
-                      customerName={order.customerName}
-                      items={order.items}
-                      totalPrice={order.totalPrice}
-                      status={order.status}
-                      createdAt={order.createdAt}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
+          <section className="lg:col-span-1">
+            <h2 className="text-xl font-semibold mb-4" data-testid="text-completed-header">
+              Completed Orders
+            </h2>
+            {completedOrders.length === 0 ? (
+              <EmptyState type="completed" />
+            ) : (
+              <div className="space-y-4">
+                {completedOrders.map(order => (
+                  <OrderCard
+                    key={order.id}
+                    orderNumber={order.orderNumber}
+                    customerName={order.customerName}
+                    items={order.items}
+                    totalPrice={order.totalPrice}
+                    status={order.status}
+                    createdAt={order.createdAt}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
 
-          <div className="lg:col-span-1">
+          <section className="lg:col-span-1">
             <RevenueCard
               todayRevenue={todayRevenue}
               completedOrders={completedOrders.length}
               averageOrderValue={averageOrderValue}
             />
-          </div>
+          </section>
         </div>
       </main>
     </div>
