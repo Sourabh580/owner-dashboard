@@ -9,15 +9,15 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Order } from "@shared/schema";
 
-const BACKEND_URL = "https://nevolt-backend.onrender.com"; // ✅ backend URL
-const RESTAURANT_ID = "res-1"; // 🏪 static restaurant id
+const BACKEND_URL = "https://nevolt-backend.onrender.com"; // backend URL
+const RESTAURANT_ID = "res-1"; // static restaurant id
 
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
-  // 🟢 Fetch all orders from backend
+  // Fetch all orders from backend
   const { data: orders = [], isLoading, refetch } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -28,30 +28,21 @@ export default function Dashboard() {
 
       const rawData = await res.json();
 
-      // ✅ Safe parsing of items field
-      return rawData.map((order: any) => {
-        let parsedItems = [];
-
-        try {
-          if (typeof order.items === "string") {
-            parsedItems = JSON.parse(order.items || "[]");
-          } else if (Array.isArray(order.items)) {
-            parsedItems = order.items;
-          }
-        } catch {
-          parsedItems = [];
-        }
-
-        return {
-          ...order,
-          items: parsedItems,
-        };
-      });
+      // Safe parsing of items field
+      return rawData.map((order: any) => ({
+        ...order,
+        items:
+          typeof order.items === "string"
+            ? JSON.parse(order.items || "[]")
+            : Array.isArray(order.items)
+            ? order.items
+            : [],
+      }));
     },
     refetchInterval: 10000, // Auto refresh every 10 seconds
   });
 
-  // 🟡 Complete order mutation (PATCH to backend)
+  // Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -78,7 +69,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🧠 Handle new orders (toast + ding + UI update)
+  // Handle new orders
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -98,15 +89,15 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🧩 WebSocket handler (optional, for real-time)
+  // WebSocket for live updates (optional)
   useWebSocket({
-    url: BACKEND_URL.replace("http", "ws"), // only works if WS is enabled
+    url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
       if (data.type === "new_order") handleNewOrder(data.order);
     },
   });
 
-  // 🕓 Reset highlight after 5 seconds
+  // Reset highlight after 5s
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -114,10 +105,8 @@ export default function Dashboard() {
     }
   }, [newOrderIds]);
 
-  // ⏳ Loading
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧾 Split by status
   const pendingOrders = orders.filter((o) => o.status === "pending");
   const completedOrders = orders.filter((o) => o.status === "completed");
 
