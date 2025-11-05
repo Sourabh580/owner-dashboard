@@ -17,7 +17,7 @@ export default function Dashboard() {
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
-  // 🟢 Fetch all orders from backend
+  // 🟢 Fetch all orders
   const { data: orders = [], isLoading, refetch } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -25,7 +25,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch orders");
       const rawData = await res.json();
 
-      // ✅ Safely handle missing or invalid items
+      // ✅ Safely parse JSON and ensure fields exist
       return rawData.map((order: any) => ({
         ...order,
         items:
@@ -34,6 +34,7 @@ export default function Dashboard() {
             : Array.isArray(order.items)
             ? order.items
             : [],
+        status: (order.status || "pending").toLowerCase(), // ✅ Normalize status
       }));
     },
     refetchInterval: 10000,
@@ -51,7 +52,10 @@ export default function Dashboard() {
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "✅ Order Completed", description: "The order has been marked as completed." });
+      toast({
+        title: "✅ Order Completed",
+        description: "The order has been marked as completed.",
+      });
       refetch();
     },
     onError: () => {
@@ -63,7 +67,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🧠 Handle new orders (sound + toast)
+  // 🧠 Handle new orders
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -74,13 +78,15 @@ export default function Dashboard() {
 
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
-
-      toast({ title: "🔔 New Order Received!", description: `Order #${order.id} from table ${order.table_no}` });
+      toast({
+        title: "🔔 New Order Received!",
+        description: `Order #${order.id} from table ${order.table_no}`,
+      });
     },
     [playNotificationSound, toast]
   );
 
-  // 🧩 WebSocket (optional real-time)
+  // 🧩 WebSocket (real-time updates)
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -88,6 +94,7 @@ export default function Dashboard() {
     },
   });
 
+  // ⏳ Reset highlights
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -97,14 +104,20 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // ✅ Safe guards
+  // ✅ Safe guards + Case-insensitive filtering
   const validOrders = Array.isArray(orders) ? orders : [];
-  const pendingOrders = validOrders.filter((o) => o.status === "pending");
-  const completedOrders = validOrders.filter((o) => o.status === "completed");
+  const pendingOrders = validOrders.filter(
+    (o) => (o.status || "").toLowerCase() === "pending"
+  );
+  const completedOrders = validOrders.filter(
+    (o) => (o.status || "").toLowerCase() === "completed"
+  );
+
+  console.log("🧾 Orders from backend:", validOrders);
 
   return (
     <div className="p-4 space-y-6">
-      {/* Summary Cards */}
+      {/* Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <RevenueCard title="Pending Orders" value={pendingOrders.length} />
         <RevenueCard title="Completed Orders" value={completedOrders.length} />
