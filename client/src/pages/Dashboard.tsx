@@ -9,14 +9,15 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Order } from "@shared/schema";
 
-const BACKEND_URL = "https://nevolt-backend.onrender.com"; 
-const RESTAURANT_ID = "res-1"; 
+const BACKEND_URL = "https://nevolt-backend.onrender.com";
+const RESTAURANT_ID = "res-1";
 
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
+  // 🟢 Fetch all orders from backend
   const { data: orders = [], isLoading, refetch } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -24,7 +25,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch orders");
       const rawData = await res.json();
 
-      // Safe parsing of items field to avoid undefined map errors
+      // ✅ Safely handle missing or invalid items
       return rawData.map((order: any) => ({
         ...order,
         items:
@@ -38,6 +39,7 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
+  // 🟡 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -53,10 +55,15 @@ export default function Dashboard() {
       refetch();
     },
     onError: () => {
-      toast({ title: "Error", description: "Failed to complete order. Please try again.", variant: "destructive" });
+      toast({
+        title: "Error",
+        description: "Failed to complete order. Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
+  // 🧠 Handle new orders (sound + toast)
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -73,6 +80,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
+  // 🧩 WebSocket (optional real-time)
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -89,17 +97,21 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  const pendingOrders = orders.filter((o) => o.status === "pending");
-  const completedOrders = orders.filter((o) => o.status === "completed");
+  // ✅ Safe guards
+  const validOrders = Array.isArray(orders) ? orders : [];
+  const pendingOrders = validOrders.filter((o) => o.status === "pending");
+  const completedOrders = validOrders.filter((o) => o.status === "completed");
 
   return (
     <div className="p-4 space-y-6">
+      {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <RevenueCard title="Pending Orders" value={pendingOrders.length} />
         <RevenueCard title="Completed Orders" value={completedOrders.length} />
-        <RevenueCard title="Total Orders" value={orders.length} />
+        <RevenueCard title="Total Orders" value={validOrders.length} />
       </div>
 
+      {/* Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
