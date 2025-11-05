@@ -9,28 +9,52 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Order } from "@shared/schema";
 
+const BACKEND_URL = "https://nevolt-backend.onrender.com"; // ✅ backend URL
+const RESTAURANT_ID = "res-1"; // 🏪 static restaurant id
+
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
-  const { data: orders = [], isLoading } = useQuery<Order[]>({
-    queryKey: ['/api/orders'],
+  // 🟢 Fetch all orders from backend
+  const { data: orders = [], isLoading, refetch } = useQuery<Order[]>({
+    queryKey: ["/api/orders"],
+    queryFn: async () => {
+      const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
+      if (!res.ok) throw new Error("Failed to fetch orders");
+
+      const rawData = await res.json();
+
+      // 🧩 Parse JSON stringified fields safely
+      return rawData.map((order: any) => ({
+        ...order,
+        items:
+          typeof order.items === "string"
+            ? JSON.parse(order.items)
+            : order.items || [],
+      }));
+    },
+    refetchInterval: 10000, // Auto refresh every 10 seconds
   });
 
+  // 🟡 Complete order mutation (PATCH to backend)
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
-      const res = await apiRequest('PATCH', `/api/orders/${orderId}/status`, { status: 'completed' });
+      const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+      });
+      if (!res.ok) throw new Error("Failed to update order");
       return res.json();
     },
-    onSuccess: (updatedOrder: Order) => {
-      queryClient.setQueryData<Order[]>(['/api/orders'], (oldOrders = []) => {
-        return oldOrders.map(o => o.id === updatedOrder.id ? updatedOrder : o);
-      });
+    onSuccess: () => {
       toast({
-        title: "Order completed",
+        title: "✅ Order Completed",
         description: "The order has been marked as completed.",
       });
+      refetch();
     },
     onError: () => {
       toast({
@@ -41,137 +65,76 @@ export default function Dashboard() {
     },
   });
 
-  const handleNewOrder = useCallback((order: Order) => {
-    queryClient.setQueryData<Order[]>(['/api/orders'], (oldOrders = []) => {
-      const exists = oldOrders.find(o => o.id === order.id);
-      if (exists) return oldOrders;
-      return [order, ...oldOrders];
-    });
-    
-    setNewOrderIds(prev => new Set(prev).add(order.id));
-    playNotificationSound();
-
-    toast({
-      title: "New Order Received!",
-      description: `Order #${order.orderNumber} from ${order.customerName}`,
-    });
-
-    setTimeout(() => {
-      setNewOrderIds(prev => {
-        const next = new Set(prev);
-        next.delete(order.id);
-        return next;
+  // 🧠 Handle new orders (toast + ding + UI update)
+  const handleNewOrder = useCallback(
+    (order: Order) => {
+      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
+        const exists = oldOrders.find((o) => o.id === order.id);
+        if (exists) return oldOrders;
+        return [order, ...oldOrders];
       });
-    }, 3000);
-  }, [playNotificationSound, toast]);
 
-  const handleOrderUpdated = useCallback((order: Order) => {
-    queryClient.setQueryData<Order[]>(['/api/orders'], (oldOrders = []) => {
-      return oldOrders.map(o => o.id === order.id ? order : o);
-    });
-  }, []);
+      setNewOrderIds((prev) => new Set(prev).add(order.id));
+      playNotificationSound();
 
+      toast({
+        title: "🔔 New Order Received!",
+        description: `Order #${order.id} from table ${order.table_no}`,
+      });
+    },
+    [playNotificationSound, toast]
+  );
+
+  // 🧩 WebSocket handler (optional, for real-time)
   useWebSocket({
-    onNewOrder: handleNewOrder,
-    onOrderUpdated: handleOrderUpdated,
+    url: BACKEND_URL.replace("http", "ws"), // only works if WS is enabled
+    onMessage: (data) => {
+      if (data.type === "new_order") handleNewOrder(data.order);
+    },
   });
 
-  const pendingOrders = orders.filter(order => order.status === "pending");
-  const completedOrders = orders.filter(order => order.status === "completed");
+  // 🕓 Reset highlight after 5 seconds
+  useEffect(() => {
+    if (newOrderIds.size > 0) {
+      const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [newOrderIds]);
 
-  const todayRevenue = completedOrders.reduce(
-    (sum, order) => sum + parseFloat(order.totalPrice),
-    0
-  ).toFixed(2);
+  // ⏳ Loading
+  if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  const averageOrderValue = completedOrders.length > 0
-    ? (parseFloat(todayRevenue) / completedOrders.length).toFixed(2)
-    : "0.00";
-
-  const handleCompleteOrder = (orderId: string) => {
-    completeOrderMutation.mutate(orderId);
-  };
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading dashboard...</p>
-        </div>
-      </div>
-    );
-  }
+  // 🧾 Split by status
+  const pendingOrders = orders.filter((o) => o.status === "pending");
+  const completedOrders = orders.filter((o) => o.status === "completed");
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <h1 className="text-2xl font-semibold" data-testid="text-dashboard-title">
-            Restaurant Dashboard
-          </h1>
-        </div>
-      </header>
+    <div className="p-4 space-y-6">
+      {/* Summary */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <RevenueCard title="Pending Orders" value={pendingOrders.length} />
+        <RevenueCard title="Completed Orders" value={completedOrders.length} />
+        <RevenueCard title="Total Orders" value={orders.length} />
+      </div>
 
-      <main className="max-w-7xl mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <section className="lg:col-span-1">
-            <h2 className="text-xl font-semibold mb-4" data-testid="text-pending-header">
-              Pending Orders
-            </h2>
-            {pendingOrders.length === 0 ? (
-              <EmptyState type="pending" />
-            ) : (
-              <div className="space-y-4">
-                {pendingOrders.map(order => (
-                  <OrderCard
-                    key={order.id}
-                    orderNumber={order.orderNumber}
-                    customerName={order.customerName}
-                    items={order.items}
-                    totalPrice={order.totalPrice}
-                    status={order.status as "pending" | "completed"}
-                    createdAt={new Date(order.createdAt)}
-                    onComplete={() => handleCompleteOrder(order.id)}
-                    isNew={newOrderIds.has(order.id)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="lg:col-span-1">
-            <h2 className="text-xl font-semibold mb-4" data-testid="text-completed-header">
-              Completed Orders
-            </h2>
-            {completedOrders.length === 0 ? (
-              <EmptyState type="completed" />
-            ) : (
-              <div className="space-y-4">
-                {completedOrders.map(order => (
-                  <OrderCard
-                    key={order.id}
-                    orderNumber={order.orderNumber}
-                    customerName={order.customerName}
-                    items={order.items}
-                    totalPrice={order.totalPrice}
-                    status={order.status as "pending" | "completed"}
-                    createdAt={new Date(order.createdAt)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="lg:col-span-1">
-            <RevenueCard
-              todayRevenue={todayRevenue}
-              completedOrders={completedOrders.length}
-              averageOrderValue={averageOrderValue}
-            />
-          </section>
-        </div>
-      </main>
+      {/* Active Orders */}
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
+        {pendingOrders.length === 0 ? (
+          <EmptyState message="No active orders at the moment." />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {pendingOrders.map((order) => (
+              <OrderCard
+                key={order.id}
+                order={order}
+                isNew={newOrderIds.has(order.id)}
+                onComplete={() => completeOrderMutation.mutate(order.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
