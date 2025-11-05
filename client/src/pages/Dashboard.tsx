@@ -21,19 +21,32 @@ export default function Dashboard() {
   const { data: orders = [], isLoading, refetch } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
-      const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
+      const res = await fetch(
+        `${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`
+      );
       if (!res.ok) throw new Error("Failed to fetch orders");
 
       const rawData = await res.json();
 
-      // 🧩 Parse JSON stringified fields safely
-      return rawData.map((order: any) => ({
-        ...order,
-        items:
-          typeof order.items === "string"
-            ? JSON.parse(order.items)
-            : order.items || [],
-      }));
+      // ✅ Safe parsing of items field
+      return rawData.map((order: any) => {
+        let parsedItems = [];
+
+        try {
+          if (typeof order.items === "string") {
+            parsedItems = JSON.parse(order.items || "[]");
+          } else if (Array.isArray(order.items)) {
+            parsedItems = order.items;
+          }
+        } catch {
+          parsedItems = [];
+        }
+
+        return {
+          ...order,
+          items: parsedItems,
+        };
+      });
     },
     refetchInterval: 10000, // Auto refresh every 10 seconds
   });
