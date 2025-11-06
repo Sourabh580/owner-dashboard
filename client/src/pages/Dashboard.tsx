@@ -17,16 +17,15 @@ export default function Dashboard() {
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
-  // 🟢 Fetch all orders from backend
+  // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
       const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
       if (!res.ok) throw new Error("Failed to fetch orders");
-
       const rawData = await res.json();
-      console.log("🧾 Orders from backend:", rawData);
 
+      // Parse JSON string safely
       return rawData.map((order: any) => ({
         ...order,
         items:
@@ -40,7 +39,7 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
-  // 🟡 Complete order mutation (with instant UI update)
+  // 🟡 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -52,12 +51,9 @@ export default function Dashboard() {
       return res.json();
     },
     onSuccess: (updatedOrder) => {
-      toast({
-        title: "✅ Order Completed",
-        description: `Order #${updatedOrder.id} marked as completed.`,
-      });
+      toast({ title: "✅ Order Completed", description: `Order #${updatedOrder.id} marked as completed.` });
 
-      // ✅ Instantly update cache/UI
+      // Update local cache instantly
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
         oldOrders.map((o) =>
           o.id === updatedOrder.id ? { ...o, status: "completed" } : o
@@ -67,13 +63,13 @@ export default function Dashboard() {
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to complete order. Please try again.",
+        description: "Failed to complete order.",
         variant: "destructive",
       });
     },
   });
 
-  // 🧠 Handle new orders (toast + ding + UI update)
+  // 🧠 Handle new orders (sound + toast)
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -81,10 +77,8 @@ export default function Dashboard() {
         if (exists) return oldOrders;
         return [order, ...oldOrders];
       });
-
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
-
       toast({
         title: "🔔 New Order Received!",
         description: `Order #${order.id} from table ${order.table_no}`,
@@ -93,7 +87,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🧩 WebSocket handler (optional real-time)
+  // 🧩 WebSocket (optional)
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -101,7 +95,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🕓 Reset highlight after 5 seconds
+  // Remove new order highlight after 5s
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -109,25 +103,28 @@ export default function Dashboard() {
     }
   }, [newOrderIds]);
 
-  // ⏳ Loading
-  if (isLoading)
-    return <div className="p-4 text-center">Loading orders...</div>;
+  // 🕓 Loading
+  if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // ✅ Ensure array safety
+  // ✅ Safe handling
   const validOrders = Array.isArray(orders) ? orders : [];
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
   const completedOrders = validOrders.filter((o) => o.status === "completed");
 
+  // 💰 Total revenue (sum of all completed orders)
+  const totalRevenue = completedOrders.reduce((sum, order: any) => {
+    const price = parseFloat(order.total_price || 0);
+    return sum + (isNaN(price) ? 0 : price);
+  }, 0);
+
   return (
     <div className="p-4 space-y-6">
-      {/* Summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <RevenueCard title="Pending Orders" value={pendingOrders.length} />
-        <RevenueCard title="Completed Orders" value={completedOrders.length} />
-        <RevenueCard title="Total Orders" value={validOrders.length} />
+      {/* ✅ Single Revenue Card */}
+      <div className="grid grid-cols-1 gap-4">
+        <RevenueCard title="Total Revenue" value={`₹${totalRevenue.toFixed(2)}`} />
       </div>
 
-      {/* Active Orders */}
+      {/* 🟡 Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
@@ -146,7 +143,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ✅ Completed Orders Section */}
+      {/* ✅ Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
         {completedOrders.length === 0 ? (
