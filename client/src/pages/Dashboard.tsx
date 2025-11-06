@@ -6,7 +6,7 @@ import EmptyState from "@/components/EmptyState";
 import { useSound } from "@/hooks/use-sound";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import type { Order } from "@shared/schema";
 
 const BACKEND_URL = "https://nevolt-backend.onrender.com";
@@ -17,15 +17,16 @@ export default function Dashboard() {
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
 
-  // 🟢 Fetch all orders
-  const { data: orders = [], isLoading, refetch } = useQuery<Order[]>({
+  // 🟢 Fetch all orders from backend
+  const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
       const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
       if (!res.ok) throw new Error("Failed to fetch orders");
-      const rawData = await res.json();
 
-      // ✅ Safely parse JSON and ensure fields exist
+      const rawData = await res.json();
+      console.log("🧾 Orders from backend:", rawData);
+
       return rawData.map((order: any) => ({
         ...order,
         items:
@@ -34,13 +35,12 @@ export default function Dashboard() {
             : Array.isArray(order.items)
             ? order.items
             : [],
-        status: (order.status || "pending").toLowerCase(), // ✅ Normalize status
       }));
     },
     refetchInterval: 10000,
   });
 
-  // 🟡 Complete order mutation
+  // 🟡 Complete order mutation (with instant UI update)
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -51,12 +51,18 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to update order");
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (updatedOrder) => {
       toast({
         title: "✅ Order Completed",
-        description: "The order has been marked as completed.",
+        description: `Order #${updatedOrder.id} marked as completed.`,
       });
-      refetch();
+
+      // ✅ Instantly update cache/UI
+      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
+        oldOrders.map((o) =>
+          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
+        )
+      );
     },
     onError: () => {
       toast({
@@ -67,7 +73,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🧠 Handle new orders
+  // 🧠 Handle new orders (toast + ding + UI update)
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -78,6 +84,7 @@ export default function Dashboard() {
 
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
+
       toast({
         title: "🔔 New Order Received!",
         description: `Order #${order.id} from table ${order.table_no}`,
@@ -86,7 +93,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🧩 WebSocket (real-time updates)
+  // 🧩 WebSocket handler (optional real-time)
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -94,7 +101,7 @@ export default function Dashboard() {
     },
   });
 
-  // ⏳ Reset highlights
+  // 🕓 Reset highlight after 5 seconds
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -102,18 +109,14 @@ export default function Dashboard() {
     }
   }, [newOrderIds]);
 
-  if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
+  // ⏳ Loading
+  if (isLoading)
+    return <div className="p-4 text-center">Loading orders...</div>;
 
-  // ✅ Safe guards + Case-insensitive filtering
+  // ✅ Ensure array safety
   const validOrders = Array.isArray(orders) ? orders : [];
-  const pendingOrders = validOrders.filter(
-    (o) => (o.status || "").toLowerCase() === "pending"
-  );
-  const completedOrders = validOrders.filter(
-    (o) => (o.status || "").toLowerCase() === "completed"
-  );
-
-  console.log("🧾 Orders from backend:", validOrders);
+  const pendingOrders = validOrders.filter((o) => o.status === "pending");
+  const completedOrders = validOrders.filter((o) => o.status === "completed");
 
   return (
     <div className="p-4 space-y-6">
@@ -138,6 +141,20 @@ export default function Dashboard() {
                 isNew={newOrderIds.has(order.id)}
                 onComplete={() => completeOrderMutation.mutate(order.id)}
               />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ✅ Completed Orders Section */}
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
+        {completedOrders.length === 0 ? (
+          <EmptyState message="No completed orders yet." />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {completedOrders.map((order) => (
+              <OrderCard key={order.id} order={order} isNew={false} />
             ))}
           </div>
         )}
