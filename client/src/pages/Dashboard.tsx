@@ -18,7 +18,7 @@ export default function Dashboard() {
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [totalRevenue, setTotalRevenue] = useState(0);
 
-  // 🟢 Fetch all orders from backend
+  // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -36,10 +36,10 @@ export default function Dashboard() {
             : [],
       }));
 
-      // calculate revenue once at fetch time
+      // 💰 Calculate revenue (completed orders only)
       const revenue = parsed
         .filter((o: any) => o.status === "completed")
-        .reduce((sum: number, o: any) => sum + parseFloat(o.total_price || 0), 0);
+        .reduce((sum: number, o: any) => sum + parseFloat(o.total || 0), 0);
       setTotalRevenue(revenue);
 
       return parsed;
@@ -47,7 +47,7 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
-  // 🟡 Complete order mutation — updates local state instantly
+  // 🟡 Complete order mutation — updates local state & revenue
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -65,8 +65,8 @@ export default function Dashboard() {
         )
       );
 
-      // 💰 increase revenue instantly
-      const added = parseFloat(updatedOrder.total_price || 0);
+      // 💰 Increase revenue instantly using `total`
+      const added = parseFloat(updatedOrder.total || 0);
       setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
 
       toast({
@@ -83,7 +83,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🧠 Handle new orders
+  // 🧠 Handle new order event
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -101,7 +101,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // optional WebSocket
+  // Optional WebSocket for real-time updates
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -122,14 +122,24 @@ export default function Dashboard() {
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
   const completedOrders = validOrders.filter((o) => o.status === "completed");
 
+  // 📊 Calculate average order value
+  const averageOrderValue =
+    completedOrders.length > 0
+      ? (totalRevenue / completedOrders.length).toFixed(2)
+      : "0.00";
+
   return (
     <div className="p-4 space-y-6">
-      {/* 💰 Single revenue card */}
+      {/* 💰 Revenue Summary */}
       <div className="grid grid-cols-1 gap-4">
-        <RevenueCard title="Total Revenue" value={`₹${totalRevenue.toFixed(2)}`} />
+        <RevenueCard
+          todayRevenue={totalRevenue.toFixed(2)}
+          completedOrders={completedOrders.length}
+          averageOrderValue={averageOrderValue}
+        />
       </div>
 
-      {/* Active Orders */}
+      {/* 🧾 Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
@@ -148,7 +158,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Completed Orders */}
+      {/* ✅ Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
         {completedOrders.length === 0 ? (
