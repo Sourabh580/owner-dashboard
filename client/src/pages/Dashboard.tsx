@@ -16,8 +16,9 @@ export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
+  const [totalRevenue, setTotalRevenue] = useState(0);
 
-  // 🟢 Fetch all orders
+  // 🟢 Fetch all orders from backend
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -25,8 +26,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch orders");
       const rawData = await res.json();
 
-      // Parse JSON string safely
-      return rawData.map((order: any) => ({
+      const parsed = rawData.map((order: any) => ({
         ...order,
         items:
           typeof order.items === "string"
@@ -35,11 +35,19 @@ export default function Dashboard() {
             ? order.items
             : [],
       }));
+
+      // calculate revenue once at fetch time
+      const revenue = parsed
+        .filter((o: any) => o.status === "completed")
+        .reduce((sum: number, o: any) => sum + parseFloat(o.total_price || 0), 0);
+      setTotalRevenue(revenue);
+
+      return parsed;
     },
     refetchInterval: 10000,
   });
 
-  // 🟡 Complete order mutation
+  // 🟡 Complete order mutation — updates local state instantly
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -51,25 +59,31 @@ export default function Dashboard() {
       return res.json();
     },
     onSuccess: (updatedOrder) => {
-      toast({ title: "✅ Order Completed", description: `Order #${updatedOrder.id} marked as completed.` });
-
-      // Update local cache instantly
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
         oldOrders.map((o) =>
           o.id === updatedOrder.id ? { ...o, status: "completed" } : o
         )
       );
+
+      // 💰 increase revenue instantly
+      const added = parseFloat(updatedOrder.total_price || 0);
+      setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
+
+      toast({
+        title: "✅ Order Completed",
+        description: `Order #${updatedOrder.id} marked as completed.`,
+      });
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to complete order.",
+        description: "Failed to complete order. Please try again.",
         variant: "destructive",
       });
     },
   });
 
-  // 🧠 Handle new orders (sound + toast)
+  // 🧠 Handle new orders
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -87,7 +101,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🧩 WebSocket (optional)
+  // optional WebSocket
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -95,7 +109,6 @@ export default function Dashboard() {
     },
   });
 
-  // Remove new order highlight after 5s
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -103,28 +116,20 @@ export default function Dashboard() {
     }
   }, [newOrderIds]);
 
-  // 🕓 Loading
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // ✅ Safe handling
   const validOrders = Array.isArray(orders) ? orders : [];
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
   const completedOrders = validOrders.filter((o) => o.status === "completed");
 
-  // 💰 Total revenue (sum of all completed orders)
-  const totalRevenue = completedOrders.reduce((sum, order: any) => {
-    const price = parseFloat(order.total_price || 0);
-    return sum + (isNaN(price) ? 0 : price);
-  }, 0);
-
   return (
     <div className="p-4 space-y-6">
-      {/* ✅ Single Revenue Card */}
+      {/* 💰 Single revenue card */}
       <div className="grid grid-cols-1 gap-4">
         <RevenueCard title="Total Revenue" value={`₹${totalRevenue.toFixed(2)}`} />
       </div>
 
-      {/* 🟡 Active Orders */}
+      {/* Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
@@ -143,7 +148,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ✅ Completed Orders */}
+      {/* Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
         {completedOrders.length === 0 ? (
