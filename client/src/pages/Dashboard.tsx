@@ -18,6 +18,7 @@ export default function Dashboard() {
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [totalRevenue, setTotalRevenue] = useState(0);
+  const [uiOrders, setUiOrders] = useState<Order[]>([]); // 🧠 UI-only state
 
   // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
@@ -37,18 +38,17 @@ export default function Dashboard() {
             : [],
       }));
 
-      // 💰 Calculate revenue (completed orders only)
       const revenue = parsed
         .filter((o: any) => o.status === "completed")
         .reduce((sum: number, o: any) => sum + parseFloat(o.total || 0), 0);
       setTotalRevenue(revenue);
-
+      setUiOrders(parsed);
       return parsed;
     },
     refetchInterval: 10000,
   });
 
-  // 🟡 Complete order mutation — updates local state & revenue
+  // 🟡 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -65,21 +65,18 @@ export default function Dashboard() {
           o.id === updatedOrder.id ? { ...o, status: "completed" } : o
         )
       );
+      setUiOrders((prev) =>
+        prev.map((o) =>
+          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
+        )
+      );
 
-      // 💰 Increase revenue instantly using `total`
       const added = parseFloat(updatedOrder.total || 0);
       setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
 
       toast({
         title: "✅ Order Completed",
         description: `Order #${updatedOrder.id} marked as completed.`,
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to complete order. Please try again.",
-        variant: "destructive",
       });
     },
   });
@@ -92,6 +89,13 @@ export default function Dashboard() {
         if (exists) return oldOrders;
         return [order, ...oldOrders];
       });
+
+      setUiOrders((prev) => {
+        const exists = prev.find((o) => o.id === order.id);
+        if (exists) return prev;
+        return [order, ...prev];
+      });
+
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
       toast({
@@ -102,21 +106,21 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🧩 Reset handler — clears UI only (not DB)
+  // 🧩 Reset handler — UI only
   const handleReset = () => {
     if (window.confirm("Do you really want to reset the dashboard?")) {
       setTotalRevenue(0);
+      setUiOrders([]);
       setNewOrderIds(new Set());
-      queryClient.setQueryData(["/api/orders"], []); // Clear UI
-      queryClient.removeQueries(["/api/orders"]); // Clear cache
+      queryClient.setQueryData(["/api/orders"], []);
+      queryClient.removeQueries(["/api/orders"]);
+
       toast({
-        title: "Dashboard Reset",
-        description: "All data has been reset locally (DB remains safe).",
+        title: "✅ Reset Done",
       });
     }
   };
 
-  // 🧩 Real-time WebSocket listener
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -124,7 +128,6 @@ export default function Dashboard() {
     },
   });
 
-  // 🕐 Remove highlight after 5s for new orders
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -134,11 +137,10 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  const validOrders = Array.isArray(orders) ? orders : [];
+  const validOrders = Array.isArray(uiOrders) ? uiOrders : [];
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
   const completedOrders = validOrders.filter((o) => o.status === "completed");
 
-  // 📊 Calculate average order value
   const averageOrderValue =
     completedOrders.length > 0
       ? (totalRevenue / completedOrders.length).toFixed(2)
@@ -146,7 +148,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header with Reset Button */}
+      {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-semibold">📊 Owner Dashboard</h1>
         <Button
