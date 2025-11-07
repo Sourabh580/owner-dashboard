@@ -66,12 +66,13 @@ export default function Dashboard() {
         body: JSON.stringify({ status: "completed" }),
       });
       if (!res.ok) throw new Error("Failed to update order");
-      return res.json();
+      const updated = await res.json();
+      return { ...updated, completed_at: Date.now() }; // 🟢 local timestamp added
     },
     onSuccess: (updatedOrder) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
         oldOrders.map((o) =>
-          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
+          o.id === updatedOrder.id ? { ...o, status: "completed", completed_at: Date.now() } : o
         )
       );
 
@@ -118,7 +119,6 @@ export default function Dashboard() {
     },
   });
 
-  // Clear highlight after few seconds
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -128,17 +128,16 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧾 Split orders by status
+  // 🧾 Split orders
   const validOrders = Array.isArray(orders) ? orders : [];
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
   const completedOrders = validOrders.filter((o) => {
     if (o.status !== "completed") return false;
-    if (!resetTime) return true;
-    const createdAt = new Date(o.created_at).getTime();
-    return createdAt >= resetTime;
+    const completedAt = o.completed_at || new Date(o.created_at).getTime();
+    return completedAt >= resetTime;
   });
 
-  // 📊 Revenue & average
+  // 📊 Display numbers
   const displayedRevenue = totalRevenue - baseRevenue;
   const displayedCompleted = completedOrders.length - baseCompleted;
   const averageOrderValue =
@@ -164,7 +163,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header with Reset Button */}
+      {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <Button variant="destructive" onClick={handleReset}>
