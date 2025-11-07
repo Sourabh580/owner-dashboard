@@ -3,11 +3,11 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import OrderCard from "@/components/OrderCard";
 import RevenueCard from "@/components/RevenueCard";
 import EmptyState from "@/components/EmptyState";
+import { Button } from "@/components/ui/button";
 import { useSound } from "@/hooks/use-sound";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
-import { Button } from "@/components/ui/button";
 import type { Order } from "@shared/schema";
 
 const BACKEND_URL = "https://nevolt-backend.onrender.com";
@@ -16,52 +16,53 @@ const RESTAURANT_ID = "res-1";
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
-
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [resetTime, setResetTime] = useState<number>(() => {
-    const saved = localStorage.getItem("dashboard_reset_time");
+    const saved = localStorage.getItem("reset_time");
     return saved ? parseInt(saved) : 0;
   });
-
   const [visibleOrderIds, setVisibleOrderIds] = useState<Set<string>>(() => {
     const saved = localStorage.getItem("visible_order_ids");
     return saved ? new Set(JSON.parse(saved)) : new Set();
   });
 
-  // 🟢 Fetch orders
+  // 🟢 Fetch all orders
   const { data: allOrders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
       const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
       if (!res.ok) throw new Error("Failed to fetch orders");
-      const raw = await res.json();
+      const rawData = await res.json();
 
-      return raw.map((o: any) => ({
-        ...o,
+      const parsed = rawData.map((order: any) => ({
+        ...order,
         items:
-          typeof o.items === "string"
-            ? JSON.parse(o.items || "[]")
-            : Array.isArray(o.items)
-            ? o.items
+          typeof order.items === "string"
+            ? JSON.parse(order.items || "[]")
+            : Array.isArray(order.items)
+            ? order.items
             : [],
       }));
+
+      // Filter only orders after last reset or explicitly visible
+      const filtered = parsed.filter((o: any) => {
+        const createdAt = new Date(o.created_at).getTime();
+        return createdAt >= resetTime || visibleOrderIds.has(o.id);
+      });
+
+      // 💰 Calculate revenue (completed orders only)
+      const revenue = filtered
+        .filter((o: any) => o.status === "completed")
+        .reduce((sum: number, o: any) => sum + parseFloat(o.total || 0), 0);
+      setTotalRevenue(revenue);
+
+      return filtered;
     },
-    refetchInterval: 10000,
+    refetchInterval: 8000,
   });
 
-  // 🧠 Filter orders to only show post-reset ones
-  const filteredOrders = allOrders.filter((o) => visibleOrderIds.has(o.id));
-
-  // 💰 Calculate revenue
-  useEffect(() => {
-    const revenue = filteredOrders
-      .filter((o) => o.status === "completed")
-      .reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
-    setTotalRevenue(revenue);
-  }, [filteredOrders]);
-
-  // 🟡 Complete order
+  // 🟡 Complete order mutation — updates local state & revenue
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -72,45 +73,48 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to update order");
       return res.json();
     },
-    onSuccess: (updated) => {
-      queryClient.setQueryData<Order[]>(["/api/orders"], (old = []) =>
-        old.map((o) => (o.id === updated.id ? { ...o, status: "completed" } : o))
+    onSuccess: (updatedOrder) => {
+      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
+        oldOrders.map((o) =>
+          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
+        )
       );
 
-      const added = parseFloat(updated.total || 0);
+      // 💰 Increase revenue instantly using `total`
+      const added = parseFloat(updatedOrder.total || 0);
       setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
-      toast({ title: "✅ Order Completed", description: `Order #${updated.id} marked done.` });
+
+      toast({
+        title: "✅ Order Completed",
+        description: `Order #${updatedOrder.id} marked as completed.`,
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to complete order. Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
-  // 🧩 Reset handler
-  const handleReset = () => {
-    if (window.confirm("Do you really want to reset the dashboard?")) {
-      const now = Date.now();
-      localStorage.setItem("dashboard_reset_time", now.toString());
-      localStorage.setItem("visible_order_ids", JSON.stringify([]));
-      setResetTime(now);
-      setVisibleOrderIds(new Set());
-      setTotalRevenue(0);
-      toast({ title: "✅ Reset Done", description: "Dashboard restarted from zero." });
-    }
-  };
-
-  // 🔔 Handle new order
+  // 🧠 Handle new order event
   const handleNewOrder = useCallback(
     (order: Order) => {
       const createdAt = new Date(order.created_at).getTime();
-      if (createdAt < resetTime) return; // ignore pre-reset orders
 
-      queryClient.setQueryData<Order[]>(["/api/orders"], (old = []) => {
-        const exists = old.find((o) => o.id === order.id);
-        return exists ? old : [order, ...old];
+      // Only add order if it's after reset
+      if (createdAt < resetTime) return;
+
+      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
+        const exists = oldOrders.find((o) => o.id === order.id);
+        if (exists) return oldOrders;
+        return [order, ...oldOrders];
       });
 
       setVisibleOrderIds((prev) => {
-        const updated = new Set(prev);
-        updated.add(order.id);
-        localStorage.setItem("visible_order_ids", JSON.stringify(Array.from(updated)));
+        const updated = new Set(prev).add(order.id);
+        localStorage.setItem("visible_order_ids", JSON.stringify([...updated]));
         return updated;
       });
 
@@ -124,7 +128,7 @@ export default function Dashboard() {
     [playNotificationSound, toast, resetTime]
   );
 
-  // WebSocket for real-time orders
+  // 🧩 WebSocket for live orders
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -132,43 +136,63 @@ export default function Dashboard() {
     },
   });
 
-  const pending = filteredOrders.filter((o) => o.status === "pending");
-  const completed = filteredOrders.filter((o) => o.status === "completed");
+  useEffect(() => {
+    if (newOrderIds.size > 0) {
+      const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [newOrderIds]);
 
-  const avgValue =
-    completed.length > 0 ? (totalRevenue / completed.length).toFixed(2) : "0.00";
+  // 🧹 Reset handler
+  const handleReset = () => {
+    if (confirm("Do you want to reset the dashboard?")) {
+      setTotalRevenue(0);
+      setResetTime(Date.now());
+      setVisibleOrderIds(new Set());
+      localStorage.setItem("reset_time", Date.now().toString());
+      localStorage.setItem("visible_order_ids", JSON.stringify([]));
+      toast({ title: "Reset Done" });
+    }
+  };
+
+  if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
+
+  const validOrders = Array.isArray(allOrders) ? allOrders : [];
+  const pendingOrders = validOrders.filter((o) => o.status === "pending");
+  const completedOrders = validOrders.filter((o) => o.status === "completed");
+
+  // 📊 Average order value
+  const averageOrderValue =
+    completedOrders.length > 0
+      ? (totalRevenue / completedOrders.length).toFixed(2)
+      : "0.00";
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <Button
-          variant="destructive"
-          onClick={handleReset}
-          className="bg-red-600 hover:bg-red-700"
-        >
+      {/* 🔴 Reset button (top-right) */}
+      <div className="flex justify-end">
+        <Button variant="destructive" onClick={handleReset}>
           Reset
         </Button>
       </div>
 
-      {/* Revenue */}
+      {/* 💰 Revenue Summary */}
       <div className="grid grid-cols-1 gap-4">
         <RevenueCard
           todayRevenue={totalRevenue.toFixed(2)}
-          completedOrders={completed.length}
-          averageOrderValue={avgValue}
+          completedOrders={completedOrders.length}
+          averageOrderValue={averageOrderValue}
         />
       </div>
 
-      {/* Active Orders */}
+      {/* 🧾 Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
-        {pending.length === 0 ? (
-          <EmptyState message="No active orders." />
+        {pendingOrders.length === 0 ? (
+          <EmptyState message="No active orders at the moment." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {pending.map((order) => (
+            {pendingOrders.map((order) => (
               <OrderCard
                 key={order.id}
                 order={order}
@@ -180,15 +204,15 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Completed Orders */}
+      {/* ✅ Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
-        {completed.length === 0 ? (
+        {completedOrders.length === 0 ? (
           <EmptyState message="No completed orders yet." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {completed.map((order) => (
-              <OrderCard key={order.id} order={order} />
+            {completedOrders.map((order) => (
+              <OrderCard key={order.id} order={order} isNew={false} />
             ))}
           </div>
         )}
