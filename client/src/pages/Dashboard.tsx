@@ -18,7 +18,8 @@ export default function Dashboard() {
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [totalRevenue, setTotalRevenue] = useState(0);
-  const [uiOrders, setUiOrders] = useState<Order[]>([]); // 🧠 UI-only state
+  const [uiOrders, setUiOrders] = useState<Order[]>([]);
+  const [isReset, setIsReset] = useState(false);
 
   // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
@@ -41,14 +42,18 @@ export default function Dashboard() {
       const revenue = parsed
         .filter((o: any) => o.status === "completed")
         .reduce((sum: number, o: any) => sum + parseFloat(o.total || 0), 0);
-      setTotalRevenue(revenue);
-      setUiOrders(parsed);
+
+      // Agar reset hua hai, to UI blank rakho
+      if (!isReset) {
+        setTotalRevenue(revenue);
+        setUiOrders(parsed);
+      }
       return parsed;
     },
     refetchInterval: 10000,
   });
 
-  // 🟡 Complete order mutation
+  // 🟡 Complete order
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -60,19 +65,11 @@ export default function Dashboard() {
       return res.json();
     },
     onSuccess: (updatedOrder) => {
-      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
-        oldOrders.map((o) =>
-          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
-        )
-      );
       setUiOrders((prev) =>
-        prev.map((o) =>
-          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
-        )
+        prev.map((o) => (o.id === updatedOrder.id ? { ...o, status: "completed" } : o))
       );
-
       const added = parseFloat(updatedOrder.total || 0);
-      setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
+      if (!isReset) setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
 
       toast({
         title: "✅ Order Completed",
@@ -81,21 +78,15 @@ export default function Dashboard() {
     },
   });
 
-  // 🧠 Handle new order event
+  // 🧠 Handle new order
   const handleNewOrder = useCallback(
     (order: Order) => {
-      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
-        const exists = oldOrders.find((o) => o.id === order.id);
-        if (exists) return oldOrders;
-        return [order, ...oldOrders];
-      });
-
+      setIsReset(false); // reset flag hatao taaki naye order dikhein
       setUiOrders((prev) => {
         const exists = prev.find((o) => o.id === order.id);
         if (exists) return prev;
         return [order, ...prev];
       });
-
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
       toast({
@@ -106,21 +97,18 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🧩 Reset handler — UI only
+  // 🔴 Reset button
   const handleReset = () => {
     if (window.confirm("Do you really want to reset the dashboard?")) {
+      setIsReset(true);
       setTotalRevenue(0);
       setUiOrders([]);
       setNewOrderIds(new Set());
-      queryClient.setQueryData(["/api/orders"], []);
-      queryClient.removeQueries(["/api/orders"]);
-
-      toast({
-        title: "✅ Reset Done",
-      });
+      toast({ title: "✅ Reset Done" });
     }
   };
 
+  // 🔄 WebSocket
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -137,9 +125,8 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  const validOrders = Array.isArray(uiOrders) ? uiOrders : [];
-  const pendingOrders = validOrders.filter((o) => o.status === "pending");
-  const completedOrders = validOrders.filter((o) => o.status === "completed");
+  const pendingOrders = uiOrders.filter((o) => o.status === "pending");
+  const completedOrders = uiOrders.filter((o) => o.status === "completed");
 
   const averageOrderValue =
     completedOrders.length > 0
@@ -160,7 +147,7 @@ export default function Dashboard() {
         </Button>
       </div>
 
-      {/* 💰 Revenue Summary */}
+      {/* Revenue Summary */}
       <div className="grid grid-cols-1 gap-4">
         <RevenueCard
           todayRevenue={totalRevenue.toFixed(2)}
@@ -169,7 +156,7 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* 🧾 Active Orders */}
+      {/* Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
@@ -188,7 +175,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ✅ Completed Orders */}
+      {/* Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
         {completedOrders.length === 0 ? (
