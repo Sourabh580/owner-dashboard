@@ -8,6 +8,7 @@ interface OrderItem {
   name: string;
   quantity: number;
   price?: number;
+  description?: string;
 }
 
 interface OrderCardProps {
@@ -19,9 +20,9 @@ interface OrderCardProps {
 export default function OrderCard({ order, onComplete, isNew = false }: OrderCardProps) {
   if (!order) return null;
 
-  const { id, customer_name, items = [], total_price, status, created_at } = order;
+  const { id, customer_name, table_no, items = [], total_price, status, created_at } = order;
 
-  // Safely parse items and include quantity + price
+  // Safely parse items and include quantity + price + description
   const safeItems: OrderItem[] = Array.isArray(items)
     ? items.map((item: any) => {
         if (typeof item === "string") {
@@ -34,9 +35,10 @@ export default function OrderCard({ order, onComplete, isNew = false }: OrderCar
             name: item.name || "Unknown",
             quantity: item.quantity || item.qty || 1,
             price: item.price || 0,
+            description: item.description || "",
           };
         }
-        return { name: "Unknown", quantity: 1, price: 0 };
+        return { name: "Unknown", quantity: 1, price: 0, description: "" };
       })
     : [];
 
@@ -53,11 +55,19 @@ export default function OrderCard({ order, onComplete, isNew = false }: OrderCar
         <Badge variant={isPending ? "default" : "secondary"}>
           {isPending ? (
             <>
-              <Clock className="w-3 h-3 mr-1" /> Order #{id}
+              <Clock className="w-3 h-3 mr-1" />
+              <span className="font-semibold">
+                Order #{id}
+                {table_no && <span className="ml-1">- Table {table_no}</span>}
+              </span>
             </>
           ) : (
             <>
-              <CheckCircle2 className="w-3 h-3 mr-1" /> Order #{id}
+              <CheckCircle2 className="w-3 h-3 mr-1" />
+              <span className="font-semibold">
+                Order #{id}
+                {table_no && <span className="ml-1">- Table {table_no}</span>}
+              </span>
             </>
           )}
         </Badge>
@@ -73,19 +83,26 @@ export default function OrderCard({ order, onComplete, isNew = false }: OrderCar
         <h3 className="font-medium text-base">{customer_name || "Guest"}</h3>
       </div>
 
-      {/* Items with quantity and price */}
+      {/* Items with quantity, price and description */}
       <div className="space-y-2">
         {safeItems.length > 0 ? (
           safeItems.map((item, index) => (
-            <div key={index} className="flex justify-between text-sm">
-              <span className="text-muted-foreground">
-                {item.name} × {item.quantity}
-              </span>
-              {item.price ? (
-                <span className="font-medium">
-                  ₹{(item.price * item.quantity).toFixed(2)}
+            <div key={index} className="border-b pb-1">
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">
+                  {item.name} × {item.quantity}
                 </span>
-              ) : null}
+                {item.price ? (
+                  <span className="font-medium">
+                    ₹{(item.price * item.quantity).toFixed(2)}
+                  </span>
+                ) : null}
+              </div>
+              {item.description && (
+                <p className="text-xs text-muted-foreground italic ml-2">
+                  {item.description}
+                </p>
+              )}
             </div>
           ))
         ) : (
