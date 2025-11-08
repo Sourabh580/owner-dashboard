@@ -6,35 +6,32 @@ import EmptyState from "@/components/EmptyState";
 import { useSound } from "@/hooks/use-sound";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useToast } from "@/hooks/use-toast";
-import { queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
+import { queryClient } from "@/lib/queryClient";
 import type { Order } from "@shared/schema";
 
 const BACKEND_URL = "https://nevolt-backend.onrender.com";
 const RESTAURANT_ID = "res-1";
+const RESET_KEY = "dashboard-reset-timestamp";
 
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
-
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [totalRevenue, setTotalRevenue] = useState(0);
-  const [completedCount, setCompletedCount] = useState(0);
   const [resetTimestamp, setResetTimestamp] = useState<number>(
-    () => Number(localStorage.getItem("resetTimestamp")) || 0
+    Number(localStorage.getItem(RESET_KEY)) || 0
   );
 
   // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
-      const res = await fetch(
-        `${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`
-      );
+      const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
       if (!res.ok) throw new Error("Failed to fetch orders");
       const rawData = await res.json();
 
-      return rawData.map((order: any) => ({
+      const parsed = rawData.map((order: any) => ({
         ...order,
         items:
           typeof order.items === "string"
@@ -43,10 +40,13 @@ export default function Dashboard() {
             ? order.items
             : [],
       }));
+
+      return parsed;
     },
+    refetchInterval: 10000,
   });
 
-  // 🟡 Complete Order Mutation
+  // 🟡 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -66,7 +66,6 @@ export default function Dashboard() {
 
       const added = parseFloat(updatedOrder.total || 0);
       setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
-      setCompletedCount((prev) => prev + 1);
 
       toast({
         title: "✅ Order Completed",
@@ -82,7 +81,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🧠 New Order via WebSocket
+  // 🧠 Handle new order event
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -100,6 +99,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
+  // 🔔 WebSocket updates
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -107,7 +107,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🔄 Pulse clear
+  // 🕒 Reset highlight timeout
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -118,30 +118,35 @@ export default function Dashboard() {
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
   // 🧹 Filter orders based on resetTimestamp
-  const filteredOrders = orders.filter(
-    (o) => new Date(o.created_at).getTime() > resetTimestamp
-  );
+  const filteredOrders = orders.filter((o) => {
+    if (!o.created_at) return false;
+    const orderTime = new Date(o.created_at).getTime();
+    if (isNaN(orderTime)) return false;
+    return orderTime > resetTimestamp;
+  });
 
   const pendingOrders = filteredOrders.filter((o) => o.status === "pending");
   const completedOrders = filteredOrders.filter((o) => o.status === "completed");
 
-  // 📊 Calculate averages
+  const totalRevenueFiltered = completedOrders.reduce(
+    (sum, o) => sum + parseFloat(o.total || 0),
+    0
+  );
+
   const averageOrderValue =
-    completedCount > 0
-      ? (totalRevenue / completedCount).toFixed(2)
+    completedOrders.length > 0
+      ? (totalRevenueFiltered / completedOrders.length).toFixed(2)
       : "0.00";
 
-  // 🧹 Reset Handler
+  // 🧭 Reset handler
   const handleReset = () => {
-    if (window.confirm("Do you want to reset the dashboard?")) {
+    if (confirm("Do you want to reset?")) {
       const now = Date.now();
-      localStorage.setItem("resetTimestamp", String(now));
+      localStorage.setItem(RESET_KEY, String(now));
       setResetTimestamp(now);
       setTotalRevenue(0);
-      setCompletedCount(0);
-
       toast({
-        title: "✅ Reset Done",
+        title: "Reset Done",
         description: "Dashboard counters reset successfully.",
       });
     }
@@ -149,34 +154,32 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header */}
+      {/* Header with reset button */}
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-semibold">Owner Dashboard</h1>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => queryClient.invalidateQueries(["/api/orders"])}
-          >
-            Refresh
-          </Button>
-          <Button variant="destructive" onClick={handleReset}>
-            Reset
-          </Button>
-        </div>
+        <h1 className="text-2xl font-semibold">Dashboard</h1>
+        <Button
+          variant="destructive"
+          className="bg-red-600 hover:bg-red-700 text-white"
+          onClick={handleReset}
+        >
+          Reset
+        </Button>
       </div>
 
-      {/* Revenue Summary */}
-      <RevenueCard
-        todayRevenue={totalRevenue.toFixed(2)}
-        completedOrders={completedCount}
-        averageOrderValue={averageOrderValue}
-      />
+      {/* 💰 Revenue Summary */}
+      <div className="grid grid-cols-1 gap-4">
+        <RevenueCard
+          todayRevenue={totalRevenueFiltered.toFixed(2)}
+          completedOrders={completedOrders.length}
+          averageOrderValue={averageOrderValue}
+        />
+      </div>
 
-      {/* Active Orders */}
+      {/* 🧾 Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
-          <EmptyState message="No active orders." />
+          <EmptyState message="No active orders at the moment." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pendingOrders.map((order) => (
@@ -191,7 +194,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Completed Orders */}
+      {/* ✅ Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
         {completedOrders.length === 0 ? (
