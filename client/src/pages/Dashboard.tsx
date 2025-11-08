@@ -17,19 +17,20 @@ const RESET_KEY = "dashboard-reset-timestamp";
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
+
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [resetTimestamp, setResetTimestamp] = useState<number>(
     Number(localStorage.getItem(RESET_KEY)) || 0
   );
 
-  // 🧠 Fetch Orders
+  // 🧠 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
       const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
       if (!res.ok) throw new Error("Failed to fetch orders");
-      const rawData = await res.json();
 
+      const rawData = await res.json();
       return rawData.map((order: any) => ({
         ...order,
         items:
@@ -40,10 +41,10 @@ export default function Dashboard() {
             : [],
       }));
     },
-    refetchInterval: 8000,
+    refetchInterval: 7000,
   });
 
-  // 🧾 Complete order mutation
+  // 🟢 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -51,7 +52,7 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "completed" }),
       });
-      if (!res.ok) throw new Error("Failed to update order");
+      if (!res.ok) throw new Error("Failed to complete order");
       return res.json();
     },
     onSuccess: (updatedOrder) => {
@@ -60,36 +61,40 @@ export default function Dashboard() {
           o.id === updatedOrder.id ? { ...o, status: "completed" } : o
         )
       );
+
       toast({
         title: "✅ Order Completed",
         description: `Order #${updatedOrder.id} marked completed.`,
       });
     },
-    onError: () => {
+    onError: () =>
       toast({
         title: "Error",
         description: "Failed to complete order.",
         variant: "destructive",
-      });
-    },
+      }),
   });
 
-  // 🛎️ Handle New Order Event
+  // 🛎 Handle new orders (WebSocket)
   const handleNewOrder = useCallback(
     (order: Order) => {
+      const orderTime = new Date(order.created_at).getTime();
+      if (orderTime < resetTimestamp) return; // ignore old ones after reset
+
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
         const exists = oldOrders.find((o) => o.id === order.id);
         if (exists) return oldOrders;
         return [order, ...oldOrders];
       });
+
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
       toast({
-        title: "🆕 New Order",
+        title: "🆕 New Order Received",
         description: `Table ${order.table_no} placed an order.`,
       });
     },
-    [playNotificationSound, toast]
+    [resetTimestamp, playNotificationSound, toast]
   );
 
   // 🔔 WebSocket connection
@@ -100,22 +105,20 @@ export default function Dashboard() {
     },
   });
 
-  // Remove highlight after few seconds
+  // 🧹 Remove highlight after few seconds
   useEffect(() => {
     if (newOrderIds.size > 0) {
-      const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
+      const timer = setTimeout(() => setNewOrderIds(new Set()), 4000);
       return () => clearTimeout(timer);
     }
   }, [newOrderIds]);
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧹 Filter orders after last reset
+  // 🧾 Filter orders created after reset
   const filteredOrders = orders.filter((o) => {
     const orderTime = new Date(o.created_at).getTime();
-    // ⚙️ if invalid timestamp or before reset, hide it
-    if (isNaN(orderTime)) return false;
-    return orderTime >= resetTimestamp;
+    return !isNaN(orderTime) && orderTime >= resetTimestamp;
   });
 
   const pendingOrders = filteredOrders.filter((o) => o.status === "pending");
@@ -126,17 +129,18 @@ export default function Dashboard() {
     0
   );
 
-  const avgOrderValue =
+  const avgValue =
     completedOrders.length > 0
       ? (totalRevenue / completedOrders.length).toFixed(2)
       : "0.00";
 
-  // 🧭 Reset handler
+  // 🔴 Reset Button
   const handleReset = () => {
     if (confirm("Do you want to reset?")) {
       const now = Date.now();
       localStorage.setItem(RESET_KEY, String(now));
       setResetTimestamp(now);
+
       toast({
         title: "Reset Done",
         description: "Dashboard counters reset successfully.",
@@ -146,7 +150,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header */}
+      {/* Header with Reset */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <Button
@@ -158,18 +162,18 @@ export default function Dashboard() {
         </Button>
       </div>
 
-      {/* Revenue */}
+      {/* Revenue Summary */}
       <RevenueCard
         todayRevenue={totalRevenue.toFixed(2)}
         completedOrders={completedOrders.length}
-        averageOrderValue={avgOrderValue}
+        averageOrderValue={avgValue}
       />
 
       {/* Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-3">Active Orders</h2>
         {pendingOrders.length === 0 ? (
-          <EmptyState message="No active orders currently." />
+          <EmptyState message="No active orders right now." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pendingOrders.map((order) => (
