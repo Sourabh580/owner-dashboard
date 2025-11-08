@@ -18,12 +18,11 @@ export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
-  const [totalRevenue, setTotalRevenue] = useState(0);
   const [resetTimestamp, setResetTimestamp] = useState<number>(
     Number(localStorage.getItem(RESET_KEY)) || 0
   );
 
-  // 🟢 Fetch all orders
+  // 🧠 Fetch Orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -31,7 +30,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch orders");
       const rawData = await res.json();
 
-      const parsed = rawData.map((order: any) => ({
+      return rawData.map((order: any) => ({
         ...order,
         items:
           typeof order.items === "string"
@@ -40,13 +39,11 @@ export default function Dashboard() {
             ? order.items
             : [],
       }));
-
-      return parsed;
     },
-    refetchInterval: 10000,
+    refetchInterval: 8000,
   });
 
-  // 🟡 Complete order mutation
+  // 🧾 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -63,25 +60,21 @@ export default function Dashboard() {
           o.id === updatedOrder.id ? { ...o, status: "completed" } : o
         )
       );
-
-      const added = parseFloat(updatedOrder.total || 0);
-      setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
-
       toast({
         title: "✅ Order Completed",
-        description: `Order #${updatedOrder.id} marked as completed.`,
+        description: `Order #${updatedOrder.id} marked completed.`,
       });
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to complete order. Please try again.",
+        description: "Failed to complete order.",
         variant: "destructive",
       });
     },
   });
 
-  // 🧠 Handle new order event
+  // 🛎️ Handle New Order Event
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -92,14 +85,14 @@ export default function Dashboard() {
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
       toast({
-        title: "🔔 New Order Received!",
-        description: `Order #${order.id} from table ${order.table_no}`,
+        title: "🆕 New Order",
+        description: `Table ${order.table_no} placed an order.`,
       });
     },
     [playNotificationSound, toast]
   );
 
-  // 🔔 WebSocket updates
+  // 🔔 WebSocket connection
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -107,7 +100,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🕒 Reset highlight timeout
+  // Remove highlight after few seconds
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -117,25 +110,25 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧹 Filter orders based on resetTimestamp
+  // 🧹 Filter orders after last reset
   const filteredOrders = orders.filter((o) => {
-    if (!o.created_at) return false;
     const orderTime = new Date(o.created_at).getTime();
+    // ⚙️ if invalid timestamp or before reset, hide it
     if (isNaN(orderTime)) return false;
-    return orderTime > resetTimestamp;
+    return orderTime >= resetTimestamp;
   });
 
   const pendingOrders = filteredOrders.filter((o) => o.status === "pending");
   const completedOrders = filteredOrders.filter((o) => o.status === "completed");
 
-  const totalRevenueFiltered = completedOrders.reduce(
+  const totalRevenue = completedOrders.reduce(
     (sum, o) => sum + parseFloat(o.total || 0),
     0
   );
 
-  const averageOrderValue =
+  const avgOrderValue =
     completedOrders.length > 0
-      ? (totalRevenueFiltered / completedOrders.length).toFixed(2)
+      ? (totalRevenue / completedOrders.length).toFixed(2)
       : "0.00";
 
   // 🧭 Reset handler
@@ -144,7 +137,6 @@ export default function Dashboard() {
       const now = Date.now();
       localStorage.setItem(RESET_KEY, String(now));
       setResetTimestamp(now);
-      setTotalRevenue(0);
       toast({
         title: "Reset Done",
         description: "Dashboard counters reset successfully.",
@@ -154,7 +146,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header with reset button */}
+      {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <Button
@@ -166,20 +158,18 @@ export default function Dashboard() {
         </Button>
       </div>
 
-      {/* 💰 Revenue Summary */}
-      <div className="grid grid-cols-1 gap-4">
-        <RevenueCard
-          todayRevenue={totalRevenueFiltered.toFixed(2)}
-          completedOrders={completedOrders.length}
-          averageOrderValue={averageOrderValue}
-        />
-      </div>
+      {/* Revenue */}
+      <RevenueCard
+        todayRevenue={totalRevenue.toFixed(2)}
+        completedOrders={completedOrders.length}
+        averageOrderValue={avgOrderValue}
+      />
 
-      {/* 🧾 Active Orders */}
+      {/* Active Orders */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
+        <h2 className="text-xl font-semibold mb-3">Active Orders</h2>
         {pendingOrders.length === 0 ? (
-          <EmptyState message="No active orders at the moment." />
+          <EmptyState message="No active orders currently." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pendingOrders.map((order) => (
@@ -194,9 +184,9 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ✅ Completed Orders */}
+      {/* Completed Orders */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">Completed Orders</h2>
+        <h2 className="text-xl font-semibold mb-3">Completed Orders</h2>
         {completedOrders.length === 0 ? (
           <EmptyState message="No completed orders yet." />
         ) : (
