@@ -17,16 +17,19 @@ export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
-
-  // 👇 reset-based counters only (not affecting actual orders)
-  const [baseRevenue, setBaseRevenue] = useState<number>(
+  const [totalRevenue, setTotalRevenue] = useState(0);
+  const [baseRevenue, setBaseRevenue] = useState<number>(() =>
     parseFloat(localStorage.getItem("base_revenue") || "0")
   );
-  const [baseCompleted, setBaseCompleted] = useState<number>(
+  const [baseCompleted, setBaseCompleted] = useState<number>(() =>
     parseInt(localStorage.getItem("base_completed") || "0")
   );
+  const [resetTime, setResetTime] = useState<number>(() => {
+    const saved = localStorage.getItem("reset_time");
+    return saved ? parseInt(saved) : 0;
+  });
 
-  // 🟢 Fetch orders
+  // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
@@ -34,7 +37,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch orders");
       const rawData = await res.json();
 
-      return rawData.map((order: any) => ({
+      const parsed = rawData.map((order: any) => ({
         ...order,
         items:
           typeof order.items === "string"
@@ -43,11 +46,18 @@ export default function Dashboard() {
             ? order.items
             : [],
       }));
+
+      const revenue = parsed
+        .filter((o: any) => o.status === "completed")
+        .reduce((sum: number, o: any) => sum + parseFloat(o.total || 0), 0);
+
+      setTotalRevenue(revenue);
+      return parsed;
     },
-    refetchInterval: 8000,
+    refetchInterval: 10000,
   });
 
-  // 🟡 Complete Order
+  // 🟡 Complete order mutation
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -56,26 +66,34 @@ export default function Dashboard() {
         body: JSON.stringify({ status: "completed" }),
       });
       if (!res.ok) throw new Error("Failed to update order");
-      return res.json();
+      const updated = await res.json();
+      return { ...updated, completed_at: Date.now() }; // 🟢 local timestamp added
     },
     onSuccess: (updatedOrder) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
-        oldOrders.map((o) => (o.id === updatedOrder.id ? { ...o, status: "completed" } : o))
+        oldOrders.map((o) =>
+          o.id === updatedOrder.id ? { ...o, status: "completed", completed_at: Date.now() } : o
+        )
       );
+
+      const added = parseFloat(updatedOrder.total || 0);
+      setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
+
       toast({
         title: "✅ Order Completed",
         description: `Order #${updatedOrder.id} marked as completed.`,
       });
     },
-    onError: () =>
+    onError: () => {
       toast({
         title: "Error",
-        description: "Failed to complete order.",
+        description: "Failed to complete order. Please try again.",
         variant: "destructive",
-      }),
+      });
+    },
   });
 
-  // 🔔 Handle new orders (WebSocket)
+  // 🧠 Handle new order event
   const handleNewOrder = useCallback(
     (order: Order) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
@@ -86,13 +104,14 @@ export default function Dashboard() {
       setNewOrderIds((prev) => new Set(prev).add(order.id));
       playNotificationSound();
       toast({
-        title: "🔔 New Order",
+        title: "🔔 New Order Received!",
         description: `Order #${order.id} from table ${order.table_no}`,
       });
     },
     [playNotificationSound, toast]
   );
 
+  // 🔔 WebSocket (optional)
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -102,61 +121,70 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (newOrderIds.size > 0) {
-      const timer = setTimeout(() => setNewOrderIds(new Set()), 4000);
+      const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
       return () => clearTimeout(timer);
     }
   }, [newOrderIds]);
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // ✅ Filter orders
+  // 🧾 Split orders
   const validOrders = Array.isArray(orders) ? orders : [];
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
-  const completedOrders = validOrders.filter((o) => o.status === "completed");
+  const completedOrders = validOrders.filter((o) => {
+    if (o.status !== "completed") return false;
+    const completedAt = o.completed_at || new Date(o.created_at).getTime();
+    return completedAt >= resetTime;
+  });
 
-  // 💰 Counters
-  const totalRevenue = completedOrders.reduce(
-    (sum, o) => sum + parseFloat(o.total || 0),
-    0
-  );
-
+  // 📊 Display numbers
   const displayedRevenue = totalRevenue - baseRevenue;
   const displayedCompleted = completedOrders.length - baseCompleted;
-  const avgOrderValue =
+  const averageOrderValue =
     displayedCompleted > 0
       ? (displayedRevenue / displayedCompleted).toFixed(2)
       : "0.00";
 
-  // 🔴 Reset only counters (not affecting orders)
+  // 🔴 Reset button
   const handleReset = () => {
-    if (confirm("Do you want to reset the dashboard counters?")) {
+    if (confirm("Do you want to reset the dashboard?")) {
+      const now = Date.now();
       localStorage.setItem("base_revenue", totalRevenue.toString());
       localStorage.setItem("base_completed", completedOrders.length.toString());
+      localStorage.setItem("reset_time", now.toString());
+
       setBaseRevenue(totalRevenue);
       setBaseCompleted(completedOrders.length);
-      toast({ title: "Reset Done", description: "Counters restarted from zero." });
+      setResetTime(now);
+
+      toast({ title: "Reset Done" });
     }
   };
 
   return (
     <div className="p-4 space-y-6">
+      {/* Header */}
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Owner Dashboard</h1>
+        <h1 className="text-2xl font-bold">Dashboard</h1>
         <Button variant="destructive" onClick={handleReset}>
           Reset
         </Button>
       </div>
 
-      <RevenueCard
-        todayRevenue={displayedRevenue.toFixed(2)}
-        completedOrders={Math.max(displayedCompleted, 0)}
-        averageOrderValue={avgOrderValue}
-      />
+      {/* 💰 Revenue Summary */}
+      <div className="grid grid-cols-1 gap-4">
+        <RevenueCard
+          todayRevenue={displayedRevenue.toFixed(2)}
+          completedOrders={Math.max(displayedCompleted, 0)}
+          averageOrderValue={averageOrderValue}
+        />
+      </div>
 
+      {/* 🧾 Active Orders */}
       <div>
-        <h2 className="text-xl font-semibold mb-3">Active Orders</h2>
+        <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
-          <EmptyState message="No active orders right now." />
+          <EmptyState message="No active orders at the moment." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pendingOrders.map((order) => (
@@ -171,14 +199,18 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ✅ Completed Orders */}
       <div>
-        <h2 className="text-xl font-semibold mb-3">Completed Orders</h2>
+        <h2 className="text-xl font-semibold mb-2">Completed Orders</h2>
+        <p className="text-xs text-muted-foreground mb-4">
+          Showing orders completed after last reset
+        </p>
         {completedOrders.length === 0 ? (
           <EmptyState message="No completed orders yet." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {completedOrders.map((order) => (
-              <OrderCard key={order.id} order={order} />
+              <OrderCard key={order.id} order={order} isNew={false} />
             ))}
           </div>
         )}
