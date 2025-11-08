@@ -23,11 +23,13 @@ export default function Dashboard() {
     Number(localStorage.getItem(RESET_KEY)) || 0
   );
 
-  // 🧠 Fetch all orders
+  // 🧠 Fetch Orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
     queryFn: async () => {
-      const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
+      const res = await fetch(
+        `${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`
+      );
       if (!res.ok) throw new Error("Failed to fetch orders");
 
       const rawData = await res.json();
@@ -41,10 +43,10 @@ export default function Dashboard() {
             : [],
       }));
     },
-    refetchInterval: 7000,
+    refetchInterval: 8000,
   });
 
-  // 🟢 Complete order mutation
+  // ✅ Mutation to mark order complete
   const completeOrderMutation = useMutation({
     mutationFn: async (orderId: string) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
@@ -61,10 +63,9 @@ export default function Dashboard() {
           o.id === updatedOrder.id ? { ...o, status: "completed" } : o
         )
       );
-
       toast({
         title: "✅ Order Completed",
-        description: `Order #${updatedOrder.id} marked completed.`,
+        description: `Order #${updatedOrder.id} marked as completed.`,
       });
     },
     onError: () =>
@@ -75,11 +76,11 @@ export default function Dashboard() {
       }),
   });
 
-  // 🛎 Handle new orders (WebSocket)
+  // 🛎 WebSocket: handle new orders
   const handleNewOrder = useCallback(
     (order: Order) => {
       const orderTime = new Date(order.created_at).getTime();
-      if (orderTime < resetTimestamp) return; // ignore old ones after reset
+      if (orderTime < resetTimestamp) return; // ignore old ones
 
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
         const exists = oldOrders.find((o) => o.id === order.id);
@@ -91,13 +92,13 @@ export default function Dashboard() {
       playNotificationSound();
       toast({
         title: "🆕 New Order Received",
-        description: `Table ${order.table_no} placed an order.`,
+        description: `Order #${order.id} from Table ${order.table_no}`,
       });
     },
     [resetTimestamp, playNotificationSound, toast]
   );
 
-  // 🔔 WebSocket connection
+  // 🟢 WebSocket connection
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -105,7 +106,7 @@ export default function Dashboard() {
     },
   });
 
-  // 🧹 Remove highlight after few seconds
+  // ✨ Clear highlight after few seconds
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 4000);
@@ -115,7 +116,7 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧾 Filter orders created after reset
+  // 🧾 Filter only orders created after last reset
   const filteredOrders = orders.filter((o) => {
     const orderTime = new Date(o.created_at).getTime();
     return !isNaN(orderTime) && orderTime >= resetTimestamp;
@@ -124,6 +125,7 @@ export default function Dashboard() {
   const pendingOrders = filteredOrders.filter((o) => o.status === "pending");
   const completedOrders = filteredOrders.filter((o) => o.status === "completed");
 
+  // 💰 Revenue Calculation
   const totalRevenue = completedOrders.reduce(
     (sum, o) => sum + parseFloat(o.total || 0),
     0
@@ -136,23 +138,23 @@ export default function Dashboard() {
 
   // 🔴 Reset Button
   const handleReset = () => {
-    if (confirm("Do you want to reset?")) {
+    if (confirm("Do you want to reset dashboard counters?")) {
       const now = Date.now();
       localStorage.setItem(RESET_KEY, String(now));
       setResetTimestamp(now);
 
       toast({
         title: "Reset Done",
-        description: "Dashboard counters reset successfully.",
+        description: "Dashboard counters successfully reset.",
       });
     }
   };
 
   return (
     <div className="p-4 space-y-6">
-      {/* Header with Reset */}
+      {/* Header */}
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
+        <h1 className="text-2xl font-semibold">Owner Dashboard</h1>
         <Button
           variant="destructive"
           className="bg-red-600 hover:bg-red-700 text-white"
@@ -162,18 +164,18 @@ export default function Dashboard() {
         </Button>
       </div>
 
-      {/* Revenue Summary */}
+      {/* 💰 Revenue Summary */}
       <RevenueCard
         todayRevenue={totalRevenue.toFixed(2)}
         completedOrders={completedOrders.length}
         averageOrderValue={avgValue}
       />
 
-      {/* Active Orders */}
+      {/* 🧾 Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-3">Active Orders</h2>
         {pendingOrders.length === 0 ? (
-          <EmptyState message="No active orders right now." />
+          <EmptyState message="No active orders." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pendingOrders.map((order) => (
@@ -188,7 +190,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Completed Orders */}
+      {/* ✅ Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-3">Completed Orders</h2>
         {completedOrders.length === 0 ? (
