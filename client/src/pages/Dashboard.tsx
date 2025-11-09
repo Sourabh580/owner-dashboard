@@ -1,149 +1,203 @@
-import { useEffect, useState, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useCallback } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import OrderCard from "@/components/OrderCard";
 import RevenueCard from "@/components/RevenueCard";
 import EmptyState from "@/components/EmptyState";
-import { useSound } from "@/hooks/useSound";
+import { useSound } from "@/hooks/use-sound";
+import { useWebSocket } from "@/hooks/use-websocket";
+import { useToast } from "@/hooks/use-toast";
+import { queryClient } from "@/lib/queryClient";
+import type { Order } from "@shared/schema";
+import { Button } from "@/components/ui/button";
+
+const BACKEND_URL = "https://nevolt-backend.onrender.com";
+const RESTAURANT_ID = "res-1";
+const COMPLETED_EXPIRY = 24 * 60 * 60 * 1000; // 24h
 
 export default function Dashboard() {
-  const [completedOrders, setCompletedOrders] = useState([]);
-  const [revenue, setRevenue] = useState(0);
-  const { playNotification } = useSound();
+  const { playNotificationSound } = useSound();
+  const { toast } = useToast();
 
-  // 🟢 Load completed orders from localStorage
-  useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem("completedOrders") || "[]");
+  const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
+  const [lastResetOrderId, setLastResetOrderId] = useState<number>(() =>
+    parseInt(localStorage.getItem("last_reset_order_id") || "0")
+  );
+
+  // 🟢 Load stored completed orders from localStorage
+  const [storedCompleted, setStoredCompleted] = useState<Order[]>(() => {
+    const raw = JSON.parse(localStorage.getItem("completed_orders") || "[]");
     const now = Date.now();
-
-    // Filter valid (within 24 hours)
-    const valid = saved.filter(
-      (order) => now - order.timestamp < 24 * 60 * 60 * 1000
-    );
-
-    setCompletedOrders(valid.map((o) => o.data));
-    setRevenue(valid.reduce((sum, o) => sum + (o.data.total_price || 0), 0));
-
-    // Save only valid ones back
-    localStorage.setItem("completedOrders", JSON.stringify(valid));
-  }, []);
-
-  // 🟢 Fetch orders from backend
-  const fetchOrders = useCallback(async () => {
-    const restaurant_id = localStorage.getItem("restaurant_id");
-    const res = await fetch(
-      `https://nevolt-backend.onrender.com/api/orders?restaurant_id=${restaurant_id}`
-    );
-    if (!res.ok) throw new Error("Failed to fetch orders");
-    return res.json();
-  }, []);
-
-  const { data: orders = [], refetch } = useQuery({
-    queryKey: ["orders"],
-    queryFn: fetchOrders,
-    refetchInterval: 5000, // auto refresh
+    return raw
+      .filter((o: any) => now - o.timestamp < COMPLETED_EXPIRY)
+      .map((o: any) => o.data);
   });
 
-  // 🟡 Handle marking an order as completed
-  const handleComplete = async (order) => {
-    try {
+  // 🟢 Fetch all orders
+  const { data: orders = [], isLoading } = useQuery<Order[]>({
+    queryKey: ["/api/orders", lastResetOrderId],
+    queryFn: async () => {
       const res = await fetch(
-        `https://nevolt-backend.onrender.com/api/orders/${order.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "completed" }),
-        }
+        `${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}&after_id=${lastResetOrderId}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch orders");
+      const data = await res.json();
+      return data.map((order: any) => ({
+        ...order,
+        items:
+          typeof order.items === "string"
+            ? JSON.parse(order.items || "[]")
+            : Array.isArray(order.items)
+            ? order.items
+            : [],
+      }));
+    },
+    refetchInterval: 10000,
+  });
+
+  // 🟡 Complete order mutation
+  const completeOrderMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+      });
+      if (!res.ok) throw new Error("Failed to update order");
+      return res.json();
+    },
+    onSuccess: (updatedOrder) => {
+      // Update React Query cache
+      queryClient.setQueryData<Order[]>(["/api/orders", lastResetOrderId], (oldOrders = []) =>
+        oldOrders.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
       );
 
-      if (!res.ok) throw new Error("Failed to update order");
+      // 🟢 Save completed order to localStorage
+      const saved = JSON.parse(localStorage.getItem("completed_orders") || "[]");
+      const updated = [...saved, { data: updatedOrder, timestamp: Date.now() }];
+      localStorage.setItem("completed_orders", JSON.stringify(updated));
+      setStoredCompleted((prev) => [...prev, updatedOrder]);
 
-      const updatedOrder = { ...order, status: "completed" };
-      playNotification();
+      toast({
+        title: "✅ Order Completed",
+        description: `Order #${updatedOrder.id} marked as completed.`,
+      });
+    },
+  });
 
-      // Save completed order locally
-      const saved = JSON.parse(localStorage.getItem("completedOrders") || "[]");
-      const updatedLocal = [
-        ...saved,
-        { data: updatedOrder, timestamp: Date.now() },
-      ];
+  // 🧠 Handle new order
+  const handleNewOrder = useCallback(
+    (order: Order) => {
+      queryClient.setQueryData<Order[]>(["/api/orders", lastResetOrderId], (oldOrders = []) => {
+        const exists = oldOrders.find((o) => o.id === order.id);
+        if (exists) return oldOrders;
+        return [order, ...oldOrders];
+      });
+      setNewOrderIds((prev) => new Set(prev).add(order.id));
+      playNotificationSound();
+      toast({
+        title: "🔔 New Order Received!",
+        description: `Order #${order.id} from table ${order.table_no}`,
+      });
+    },
+    [playNotificationSound, toast, lastResetOrderId]
+  );
 
-      localStorage.setItem("completedOrders", JSON.stringify(updatedLocal));
-      setCompletedOrders((prev) => [...prev, updatedOrder]);
-      setRevenue((prev) => prev + (order.total_price || 0));
+  // 🔔 WebSocket
+  useWebSocket({
+    url: BACKEND_URL.replace("http", "ws"),
+    onMessage: (data) => {
+      if (data.type === "new_order") handleNewOrder(data.order);
+    },
+  });
 
-      await refetch();
-    } catch (err) {
-      console.error("❌ Error completing order:", err);
+  // 🕒 Highlight reset after 5s
+  useEffect(() => {
+    if (newOrderIds.size > 0) {
+      const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
+      return () => clearTimeout(timer);
     }
-  };
+  }, [newOrderIds]);
 
-  // 🔴 Reset handler
-  const handleReset = () => {
-    if (window.confirm("Do you want to reset dashboard data?")) {
-      localStorage.removeItem("completedOrders");
-      setCompletedOrders([]);
-      setRevenue(0);
-      alert("✅ Dashboard reset successfully!");
-    }
-  };
+  if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧾 Split orders
-  const pendingOrders = orders.filter((o) => o.status !== "completed");
-  const completedFromBackend = orders.filter((o) => o.status === "completed");
-
-  // Merge backend completed + locally saved
-  const mergedCompleted = [
-    ...completedFromBackend,
-    ...completedOrders.filter(
-      (o) => !completedFromBackend.some((b) => b.id === o.id)
+  const pendingOrders = orders.filter((o) => o.status === "pending");
+  const completedOrders = [
+    ...storedCompleted,
+    ...orders.filter(
+      (o) => o.status === "completed" && !storedCompleted.some((s) => s.id === o.id)
     ),
   ];
 
+  const totalRevenue = completedOrders.reduce(
+    (sum, o) => sum + parseFloat(o.total_price || 0),
+    0
+  );
+
+  // 🔴 Reset
+  const handleReset = () => {
+    if (confirm("Do you want to reset the dashboard?")) {
+      const latestId = Math.max(...orders.map((o) => o.id), 0);
+      localStorage.setItem("last_reset_order_id", latestId.toString());
+      localStorage.removeItem("completed_orders");
+      setLastResetOrderId(latestId);
+      setStoredCompleted([]);
+      toast({ title: "Reset Done" });
+    }
+  };
+
   return (
     <div className="p-4 space-y-6">
+      {/* Header */}
       <div className="flex justify-between items-center">
-        <h1 className="text-xl font-bold">Owner Dashboard</h1>
-        <button
-          onClick={handleReset}
-          className="bg-red-500 text-white px-4 py-2 rounded-lg"
-        >
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <Button variant="destructive" onClick={handleReset}>
           Reset
-        </button>
+        </Button>
       </div>
 
-      <RevenueCard total={revenue} />
+      {/* 💰 Revenue */}
+      <RevenueCard
+        todayRevenue={totalRevenue.toFixed(2)}
+        completedOrders={completedOrders.length}
+        averageOrderValue={
+          completedOrders.length > 0
+            ? (totalRevenue / completedOrders.length).toFixed(2)
+            : "0.00"
+        }
+      />
 
-      {/* Pending Orders Section */}
-      <section>
-        <h2 className="text-lg font-semibold mb-2">Pending Orders</h2>
-        {pendingOrders.length > 0 ? (
-          <div className="grid gap-3">
+      {/* 🧾 Active Orders */}
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
+        {pendingOrders.length === 0 ? (
+          <EmptyState message="No active orders at the moment." />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pendingOrders.map((order) => (
               <OrderCard
                 key={order.id}
                 order={order}
-                onComplete={() => handleComplete(order)}
+                isNew={newOrderIds.has(order.id)}
+                onComplete={() => completeOrderMutation.mutate(order.id)}
               />
             ))}
           </div>
-        ) : (
-          <EmptyState message="No pending orders" />
         )}
-      </section>
+      </div>
 
-      {/* Completed Orders Section */}
-      <section>
-        <h2 className="text-lg font-semibold mb-2">Completed Orders (Last 24h)</h2>
-        {mergedCompleted.length > 0 ? (
-          <div className="grid gap-3">
-            {mergedCompleted.map((order) => (
-              <OrderCard key={order.id} order={order} isCompleted />
+      {/* ✅ Completed Orders */}
+      <div>
+        <h2 className="text-xl font-semibold mb-2">Completed Orders (Last 24 Hours)</h2>
+        {completedOrders.length === 0 ? (
+          <EmptyState message="No completed orders yet." />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {completedOrders.map((order) => (
+              <OrderCard key={order.id} order={order} />
             ))}
           </div>
-        ) : (
-          <EmptyState message="No completed orders yet" />
         )}
-      </section>
+      </div>
     </div>
   );
 }
