@@ -16,6 +16,7 @@ const RESTAURANT_ID = "res-1";
 export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
+
   const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [baseRevenue, setBaseRevenue] = useState<number>(() =>
@@ -24,10 +25,6 @@ export default function Dashboard() {
   const [baseCompleted, setBaseCompleted] = useState<number>(() =>
     parseInt(localStorage.getItem("base_completed") || "0")
   );
-  const [resetTime, setResetTime] = useState<number>(() => {
-    const saved = localStorage.getItem("reset_time");
-    return saved ? parseInt(saved) : 0;
-  });
 
   // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
@@ -66,14 +63,11 @@ export default function Dashboard() {
         body: JSON.stringify({ status: "completed" }),
       });
       if (!res.ok) throw new Error("Failed to update order");
-      const updated = await res.json();
-      return { ...updated, completed_at: Date.now() }; // 🟢 local timestamp added
+      return res.json();
     },
     onSuccess: (updatedOrder) => {
       queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
-        oldOrders.map((o) =>
-          o.id === updatedOrder.id ? { ...o, status: "completed", completed_at: Date.now() } : o
-        )
+        oldOrders.map((o) => (o.id === updatedOrder.id ? { ...o, status: "completed" } : o))
       );
 
       const added = parseFloat(updatedOrder.total || 0);
@@ -111,7 +105,7 @@ export default function Dashboard() {
     [playNotificationSound, toast]
   );
 
-  // 🔔 WebSocket (optional)
+  // 🔔 WebSocket for real-time updates
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -119,6 +113,7 @@ export default function Dashboard() {
     },
   });
 
+  // Reset notification effect
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -128,14 +123,15 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🧾 Split orders
+  // 🧾 Orders split
   const validOrders = Array.isArray(orders) ? orders : [];
   const pendingOrders = validOrders.filter((o) => o.status === "pending");
-  const completedOrders = validOrders.filter((o) => {
-    if (o.status !== "completed") return false;
-    const completedAt = o.completed_at || new Date(o.created_at).getTime();
-    return completedAt >= resetTime;
-  });
+
+  // 🟢 Completed orders filtered by last reset order ID
+  const lastResetOrderId = parseInt(localStorage.getItem("last_reset_order_id") || "0");
+  const completedOrders = validOrders.filter(
+    (o) => o.status === "completed" && parseInt(o.id) > lastResetOrderId
+  );
 
   // 📊 Display numbers
   const displayedRevenue = totalRevenue - baseRevenue;
@@ -148,14 +144,15 @@ export default function Dashboard() {
   // 🔴 Reset button
   const handleReset = () => {
     if (confirm("Do you want to reset the dashboard?")) {
-      const now = Date.now();
+      const lastOrder = orders[0];
+      const lastId = lastOrder ? parseInt(lastOrder.id) : 0;
+      localStorage.setItem("last_reset_order_id", lastId.toString());
+
       localStorage.setItem("base_revenue", totalRevenue.toString());
       localStorage.setItem("base_completed", completedOrders.length.toString());
-      localStorage.setItem("reset_time", now.toString());
 
       setBaseRevenue(totalRevenue);
       setBaseCompleted(completedOrders.length);
-      setResetTime(now);
 
       toast({ title: "Reset Done" });
     }
