@@ -1,116 +1,149 @@
-import express from "express";
-import cors from "cors";
-import pkg from "pg";
+import { useEffect, useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import OrderCard from "@/components/OrderCard";
+import RevenueCard from "@/components/RevenueCard";
+import EmptyState from "@/components/EmptyState";
+import { useSound } from "@/hooks/useSound";
 
-const { Pool } = pkg;
-const app = express();
-app.use(cors({ origin: "*" }));
-app.use(express.json());
+export default function Dashboard() {
+  const [completedOrders, setCompletedOrders] = useState([]);
+  const [revenue, setRevenue] = useState(0);
+  const { playNotification } = useSound();
 
-// 🟢 PostgreSQL connection
-const pool = new Pool({
-  connectionString:
-    "postgresql://restaurant_backend_tahc_user:7ZNAWJG49Rq2pitu5FIAVp9BOQenNbdz@dpg-d449tu9r0fns7382dqp0-a/restaurant_backend_tahc",
-  ssl: { rejectUnauthorized: false },
-});
+  // 🟢 Load completed orders from localStorage
+  useEffect(() => {
+    const saved = JSON.parse(localStorage.getItem("completedOrders") || "[]");
+    const now = Date.now();
 
-// 🧩 Ensure table exists
-async function ensureTables() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id SERIAL PRIMARY KEY,
-      restaurant_id TEXT,
-      customer_name TEXT,
-      table_no TEXT,
-      items JSONB,
-      notes TEXT,
-      total_price NUMERIC,
-      status TEXT DEFAULT 'pending',
-      placed_at TIMESTAMP DEFAULT NOW()
+    // Filter valid (within 24 hours)
+    const valid = saved.filter(
+      (order) => now - order.timestamp < 24 * 60 * 60 * 1000
     );
-  `);
-  console.log("✅ Orders table ready");
+
+    setCompletedOrders(valid.map((o) => o.data));
+    setRevenue(valid.reduce((sum, o) => sum + (o.data.total_price || 0), 0));
+
+    // Save only valid ones back
+    localStorage.setItem("completedOrders", JSON.stringify(valid));
+  }, []);
+
+  // 🟢 Fetch orders from backend
+  const fetchOrders = useCallback(async () => {
+    const restaurant_id = localStorage.getItem("restaurant_id");
+    const res = await fetch(
+      `https://nevolt-backend.onrender.com/api/orders?restaurant_id=${restaurant_id}`
+    );
+    if (!res.ok) throw new Error("Failed to fetch orders");
+    return res.json();
+  }, []);
+
+  const { data: orders = [], refetch } = useQuery({
+    queryKey: ["orders"],
+    queryFn: fetchOrders,
+    refetchInterval: 5000, // auto refresh
+  });
+
+  // 🟡 Handle marking an order as completed
+  const handleComplete = async (order) => {
+    try {
+      const res = await fetch(
+        `https://nevolt-backend.onrender.com/api/orders/${order.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "completed" }),
+        }
+      );
+
+      if (!res.ok) throw new Error("Failed to update order");
+
+      const updatedOrder = { ...order, status: "completed" };
+      playNotification();
+
+      // Save completed order locally
+      const saved = JSON.parse(localStorage.getItem("completedOrders") || "[]");
+      const updatedLocal = [
+        ...saved,
+        { data: updatedOrder, timestamp: Date.now() },
+      ];
+
+      localStorage.setItem("completedOrders", JSON.stringify(updatedLocal));
+      setCompletedOrders((prev) => [...prev, updatedOrder]);
+      setRevenue((prev) => prev + (order.total_price || 0));
+
+      await refetch();
+    } catch (err) {
+      console.error("❌ Error completing order:", err);
+    }
+  };
+
+  // 🔴 Reset handler
+  const handleReset = () => {
+    if (window.confirm("Do you want to reset dashboard data?")) {
+      localStorage.removeItem("completedOrders");
+      setCompletedOrders([]);
+      setRevenue(0);
+      alert("✅ Dashboard reset successfully!");
+    }
+  };
+
+  // 🧾 Split orders
+  const pendingOrders = orders.filter((o) => o.status !== "completed");
+  const completedFromBackend = orders.filter((o) => o.status === "completed");
+
+  // Merge backend completed + locally saved
+  const mergedCompleted = [
+    ...completedFromBackend,
+    ...completedOrders.filter(
+      (o) => !completedFromBackend.some((b) => b.id === o.id)
+    ),
+  ];
+
+  return (
+    <div className="p-4 space-y-6">
+      <div className="flex justify-between items-center">
+        <h1 className="text-xl font-bold">Owner Dashboard</h1>
+        <button
+          onClick={handleReset}
+          className="bg-red-500 text-white px-4 py-2 rounded-lg"
+        >
+          Reset
+        </button>
+      </div>
+
+      <RevenueCard total={revenue} />
+
+      {/* Pending Orders Section */}
+      <section>
+        <h2 className="text-lg font-semibold mb-2">Pending Orders</h2>
+        {pendingOrders.length > 0 ? (
+          <div className="grid gap-3">
+            {pendingOrders.map((order) => (
+              <OrderCard
+                key={order.id}
+                order={order}
+                onComplete={() => handleComplete(order)}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState message="No pending orders" />
+        )}
+      </section>
+
+      {/* Completed Orders Section */}
+      <section>
+        <h2 className="text-lg font-semibold mb-2">Completed Orders (Last 24h)</h2>
+        {mergedCompleted.length > 0 ? (
+          <div className="grid gap-3">
+            {mergedCompleted.map((order) => (
+              <OrderCard key={order.id} order={order} isCompleted />
+            ))}
+          </div>
+        ) : (
+          <EmptyState message="No completed orders yet" />
+        )}
+      </section>
+    </div>
+  );
 }
-
-// 🟢 Create new order
-app.post("/api/orders", async (req, res) => {
-  try {
-    const { restaurant_id, customer_name, table_no, items, notes, total } = req.body;
-    const total_price = parseFloat(total) || 0;
-
-    const result = await pool.query(
-      `INSERT INTO orders (restaurant_id, customer_name, table_no, items, notes, total_price, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-       RETURNING *`,
-      [restaurant_id, customer_name, table_no, JSON.stringify(items), notes || "", total_price]
-    );
-
-    console.log("✅ New order created:", {
-      id: result.rows[0].id,
-      customer_name,
-      table_no,
-      total_price,
-    });
-
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error("❌ Error creating order:", err.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// 🟢 Get orders (supports after_id)
-app.get("/api/orders", async (req, res) => {
-  try {
-    const { restaurant_id, after_id } = req.query;
-    let query = `SELECT * FROM orders WHERE restaurant_id = $1`;
-    const params = [restaurant_id];
-
-    if (after_id && !isNaN(after_id)) {
-      query += ` AND id > $2`;
-      params.push(after_id);
-    }
-
-    query += ` ORDER BY placed_at DESC`;
-
-    const result = await pool.query(query, params);
-    console.log(`🧾 Orders fetched: ${result.rows.length} for ${restaurant_id}`);
-    res.json(result.rows);
-  } catch (err) {
-    console.error("❌ Error fetching orders:", err.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// 🟡 Update order status (complete)
-app.patch("/api/orders/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    const result = await pool.query(
-      `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
-      [status, id]
-    );
-
-    if (!result.rows.length) {
-      return res.status(404).json({ error: "Order not found" });
-    }
-
-    console.log(`✅ Order #${id} marked as ${status}`);
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error("❌ Error updating order:", err.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// 🩺 Health check
-app.get("/", (_, res) => res.send("✅ Nevolt backend running!"));
-
-// 🚀 Start server
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, async () => {
-  await ensureTables();
-  console.log(`🚀 Server running on port ${PORT}`);
-});
