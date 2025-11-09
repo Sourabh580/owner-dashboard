@@ -1,200 +1,116 @@
-import { useState, useEffect, useCallback } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import OrderCard from "@/components/OrderCard";
-import RevenueCard from "@/components/RevenueCard";
-import EmptyState from "@/components/EmptyState";
-import { useSound } from "@/hooks/use-sound";
-import { useWebSocket } from "@/hooks/use-websocket";
-import { useToast } from "@/hooks/use-toast";
-import { queryClient } from "@/lib/queryClient";
-import type { Order } from "@shared/schema";
-import { Button } from "@/components/ui/button";
+import express from "express";
+import cors from "cors";
+import pkg from "pg";
 
-const BACKEND_URL = "https://nevolt-backend.onrender.com";
-const RESTAURANT_ID = "res-1";
+const { Pool } = pkg;
+const app = express();
+app.use(cors({ origin: "*" }));
+app.use(express.json());
 
-export default function Dashboard() {
-  const { playNotificationSound } = useSound();
-  const { toast } = useToast();
-  const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
-  const [totalRevenue, setTotalRevenue] = useState(0);
-  const [baseRevenue, setBaseRevenue] = useState<number>(
-    () => parseFloat(localStorage.getItem("base_revenue") || "0")
-  );
-  const [baseCompleted, setBaseCompleted] = useState<number>(
-    () => parseInt(localStorage.getItem("base_completed") || "0")
-  );
+// 🟢 PostgreSQL connection
+const pool = new Pool({
+  connectionString:
+    "postgresql://restaurant_backend_tahc_user:7ZNAWJG49Rq2pitu5FIAVp9BOQenNbdz@dpg-d449tu9r0fns7382dqp0-a/restaurant_backend_tahc",
+  ssl: { rejectUnauthorized: false },
+});
 
-  // 🧠 Get last reset completed ID
-  const lastCompletedId = localStorage.getItem("last_completed_id") || "";
-
-  // 🟢 Fetch orders
-  const { data: orders = [], isLoading } = useQuery<Order[]>({
-    queryKey: ["/api/orders", lastCompletedId],
-    queryFn: async () => {
-      const res = await fetch(
-        `${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}${
-          lastCompletedId ? `&after_id=${lastCompletedId}` : ""
-        }`
-      );
-      if (!res.ok) throw new Error("Failed to fetch orders");
-      const rawData = await res.json();
-
-      const parsed = rawData.map((order: any) => ({
-        ...order,
-        items:
-          typeof order.items === "string"
-            ? JSON.parse(order.items || "[]")
-            : Array.isArray(order.items)
-            ? order.items
-            : [],
-      }));
-
-      const revenue = parsed
-        .filter((o: any) => o.status === "completed")
-        .reduce((sum: number, o: any) => sum + parseFloat(o.total_price || 0), 0);
-
-      setTotalRevenue(revenue);
-      return parsed;
-    },
-    refetchInterval: 10000,
-  });
-
-  // 🟡 Complete order mutation
-  const completeOrderMutation = useMutation({
-    mutationFn: async (orderId: string) => {
-      const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "completed" }),
-      });
-      if (!res.ok) throw new Error("Failed to update order");
-      return await res.json();
-    },
-    onSuccess: (updatedOrder) => {
-      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
-        oldOrders.map((o) =>
-          o.id === updatedOrder.id ? { ...o, status: "completed" } : o
-        )
-      );
-
-      const added = parseFloat(updatedOrder.total_price || 0);
-      setTotalRevenue((prev) => prev + (isNaN(added) ? 0 : added));
-
-      toast({
-        title: "✅ Order Completed",
-        description: `Order #${updatedOrder.id} marked as completed.`,
-      });
-    },
-  });
-
-  // 🧠 Handle new order
-  const handleNewOrder = useCallback(
-    (order: Order) => {
-      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
-        const exists = oldOrders.find((o) => o.id === order.id);
-        if (exists) return oldOrders;
-        return [order, ...oldOrders];
-      });
-      setNewOrderIds((prev) => new Set(prev).add(order.id));
-      playNotificationSound();
-      toast({
-        title: "🔔 New Order Received!",
-        description: `Order #${order.id} from table ${order.table_no}`,
-      });
-    },
-    [playNotificationSound, toast]
-  );
-
-  useWebSocket({
-    url: BACKEND_URL.replace("http", "ws"),
-    onMessage: (data) => {
-      if (data.type === "new_order") handleNewOrder(data.order);
-    },
-  });
-
-  if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
-
-  // 🧾 Split orders
-  const validOrders = Array.isArray(orders) ? orders : [];
-  const pendingOrders = validOrders.filter((o) => o.status === "pending");
-  const completedOrders = validOrders.filter((o) => o.status === "completed");
-
-  // 📊 Calculations
-  const displayedRevenue = totalRevenue - baseRevenue;
-  const displayedCompleted = completedOrders.length - baseCompleted;
-  const averageOrderValue =
-    displayedCompleted > 0
-      ? (displayedRevenue / displayedCompleted).toFixed(2)
-      : "0.00";
-
-  // 🔴 Reset button
-  const handleReset = () => {
-    if (confirm("Do you want to reset the dashboard?")) {
-      const lastCompletedId = orders
-        .filter((o) => o.status === "completed")
-        .reduce((maxId, o) => Math.max(maxId, o.id), 0);
-
-      localStorage.setItem("last_completed_id", lastCompletedId.toString());
-      localStorage.setItem("base_revenue", totalRevenue.toString());
-      localStorage.setItem("base_completed", completedOrders.length.toString());
-
-      setBaseRevenue(totalRevenue);
-      setBaseCompleted(completedOrders.length);
-
-      toast({ title: "Reset Done" });
-    }
-  };
-
-  return (
-    <div className="p-4 space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <Button variant="destructive" onClick={handleReset}>
-          Reset
-        </Button>
-      </div>
-
-      {/* 💰 Revenue Summary */}
-      <RevenueCard
-        todayRevenue={displayedRevenue.toFixed(2)}
-        completedOrders={Math.max(displayedCompleted, 0)}
-        averageOrderValue={averageOrderValue}
-      />
-
-      {/* 🧾 Active Orders */}
-      <div>
-        <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
-        {pendingOrders.length === 0 ? (
-          <EmptyState message="No active orders at the moment." />
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {pendingOrders.map((order) => (
-              <OrderCard
-                key={order.id}
-                order={order}
-                isNew={newOrderIds.has(order.id)}
-                onComplete={() => completeOrderMutation.mutate(order.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ✅ Completed Orders */}
-      <div>
-        <h2 className="text-xl font-semibold mb-2">Completed Orders</h2>
-        {completedOrders.length === 0 ? (
-          <EmptyState message="No completed orders yet." />
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {completedOrders.map((order) => (
-              <OrderCard key={order.id} order={order} />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+// 🧩 Ensure table exists
+async function ensureTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      restaurant_id TEXT,
+      customer_name TEXT,
+      table_no TEXT,
+      items JSONB,
+      notes TEXT,
+      total_price NUMERIC,
+      status TEXT DEFAULT 'pending',
+      placed_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  console.log("✅ Orders table ready");
 }
+
+// 🟢 Create new order
+app.post("/api/orders", async (req, res) => {
+  try {
+    const { restaurant_id, customer_name, table_no, items, notes, total } = req.body;
+    const total_price = parseFloat(total) || 0;
+
+    const result = await pool.query(
+      `INSERT INTO orders (restaurant_id, customer_name, table_no, items, notes, total_price, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+       RETURNING *`,
+      [restaurant_id, customer_name, table_no, JSON.stringify(items), notes || "", total_price]
+    );
+
+    console.log("✅ New order created:", {
+      id: result.rows[0].id,
+      customer_name,
+      table_no,
+      total_price,
+    });
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Error creating order:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 🟢 Get orders (supports after_id)
+app.get("/api/orders", async (req, res) => {
+  try {
+    const { restaurant_id, after_id } = req.query;
+    let query = `SELECT * FROM orders WHERE restaurant_id = $1`;
+    const params = [restaurant_id];
+
+    if (after_id && !isNaN(after_id)) {
+      query += ` AND id > $2`;
+      params.push(after_id);
+    }
+
+    query += ` ORDER BY placed_at DESC`;
+
+    const result = await pool.query(query, params);
+    console.log(`🧾 Orders fetched: ${result.rows.length} for ${restaurant_id}`);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ Error fetching orders:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 🟡 Update order status (complete)
+app.patch("/api/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const result = await pool.query(
+      `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    console.log(`✅ Order #${id} marked as ${status}`);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Error updating order:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// 🩺 Health check
+app.get("/", (_, res) => res.send("✅ Nevolt backend running!"));
+
+// 🚀 Start server
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, async () => {
+  await ensureTables();
+  console.log(`🚀 Server running on port ${PORT}`);
+});
