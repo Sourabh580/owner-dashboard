@@ -17,14 +17,14 @@ export default function Dashboard() {
   const { playNotificationSound } = useSound();
   const { toast } = useToast();
 
-  const [newOrderIds, setNewOrderIds] = useState<Set<string>>(new Set());
-  const [lastResetOrderId, setLastResetOrderId] = useState<number>(() =>
-    parseInt(localStorage.getItem("last_reset_order_id") || "0")
+  const [newOrderIds, setNewOrderIds] = useState<Set<number>>(new Set());
+  const [lastCompletedResetId, setLastCompletedResetId] = useState<number>(() =>
+    parseInt(localStorage.getItem("last_completed_reset_id") || "0")
   );
 
   // 🟢 Fetch all orders
   const { data: orders = [], isLoading } = useQuery<Order[]>({
-    queryKey: ["/api/orders", lastResetOrderId],
+    queryKey: ["/api/orders"],
     queryFn: async () => {
       const res = await fetch(`${BACKEND_URL}/api/orders?restaurant_id=${RESTAURANT_ID}`);
       if (!res.ok) throw new Error("Failed to fetch orders");
@@ -39,12 +39,12 @@ export default function Dashboard() {
             : [],
       }));
     },
-    refetchInterval: 10000,
+    refetchInterval: 8000,
   });
 
-  // 🟡 Complete order mutation
+  // 🟡 Mark order as complete
   const completeOrderMutation = useMutation({
-    mutationFn: async (orderId: string) => {
+    mutationFn: async (orderId: number) => {
       const res = await fetch(`${BACKEND_URL}/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -54,9 +54,10 @@ export default function Dashboard() {
       return res.json();
     },
     onSuccess: (updatedOrder) => {
-      queryClient.setQueryData<Order[]>(["/api/orders", lastResetOrderId], (oldOrders = []) =>
+      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) =>
         oldOrders.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
       );
+
       toast({
         title: "✅ Order Completed",
         description: `Order #${updatedOrder.id} marked as completed.`,
@@ -67,7 +68,7 @@ export default function Dashboard() {
   // 🧠 Handle new order event
   const handleNewOrder = useCallback(
     (order: Order) => {
-      queryClient.setQueryData<Order[]>(["/api/orders", lastResetOrderId], (oldOrders = []) => {
+      queryClient.setQueryData<Order[]>(["/api/orders"], (oldOrders = []) => {
         const exists = oldOrders.find((o) => o.id === order.id);
         if (exists) return oldOrders;
         return [order, ...oldOrders];
@@ -79,10 +80,10 @@ export default function Dashboard() {
         description: `Order #${order.id} from table ${order.table_no}`,
       });
     },
-    [playNotificationSound, toast, lastResetOrderId]
+    [playNotificationSound, toast]
   );
 
-  // 🔔 WebSocket listener
+  // 🔔 WebSocket (optional, if backend supports it)
   useWebSocket({
     url: BACKEND_URL.replace("http", "ws"),
     onMessage: (data) => {
@@ -90,7 +91,7 @@ export default function Dashboard() {
     },
   });
 
-  // Reset highlight after 5s
+  // Reset highlight after 5 seconds
   useEffect(() => {
     if (newOrderIds.size > 0) {
       const timer = setTimeout(() => setNewOrderIds(new Set()), 5000);
@@ -100,24 +101,29 @@ export default function Dashboard() {
 
   if (isLoading) return <div className="p-4 text-center">Loading orders...</div>;
 
-  // 🔎 Separate pending and completed orders
   const pendingOrders = orders.filter((o) => o.status === "pending");
 
-  // 🧱 Completed orders filter (after last reset)
-  const lastCompletedResetId = parseInt(localStorage.getItem("last_completed_reset_id") || "0");
-  let completedOrders = orders.filter((o) => o.status === "completed" && o.id > lastCompletedResetId);
+  // ✅ Show only completed orders after last reset
+  const completedOrders = orders.filter(
+    (o) => o.status === "completed" && o.id > lastCompletedResetId
+  );
 
-  const totalRevenue = completedOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+  // ✅ Revenue count based only on filtered completed orders
+  const totalRevenue = completedOrders.reduce(
+    (sum, o) => sum + parseFloat(o.total_price || 0),
+    0
+  );
 
-  // 🔴 Reset logic (for completed only)
+  // 🔴 Reset logic
   const handleReset = () => {
-    if (confirm("Do you want to reset completed orders?")) {
+    if (confirm("Do you want to reset the dashboard?")) {
       const latestCompletedId = Math.max(
         ...orders.filter((o) => o.status === "completed").map((o) => o.id),
         0
       );
       localStorage.setItem("last_completed_reset_id", latestCompletedId.toString());
-      toast({ title: "✅ Completed orders reset done" });
+      setLastCompletedResetId(latestCompletedId);
+      toast({ title: "Reset Done" });
     }
   };
 
@@ -126,7 +132,7 @@ export default function Dashboard() {
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <Button variant="destructive" onClick={handleReset}>
-          Reset Completed Orders
+          Reset
         </Button>
       </div>
 
@@ -140,7 +146,6 @@ export default function Dashboard() {
         }
       />
 
-      {/* Active Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Active Orders</h2>
         {pendingOrders.length === 0 ? (
@@ -159,11 +164,10 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Completed Orders */}
       <div>
         <h2 className="text-xl font-semibold mb-2">Completed Orders</h2>
         {completedOrders.length === 0 ? (
-          <EmptyState message="No completed orders yet after last reset." />
+          <EmptyState message="No completed orders yet." />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {completedOrders.map((order) => (
